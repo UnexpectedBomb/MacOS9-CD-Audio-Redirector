@@ -20,12 +20,15 @@ add_compile_options(-Wno-multichar -Wall)
 
 add_application(CDRecon_v1
     cd_recon.c
+    ../common/cd_probe_common.c
     cd_recon.r
     TYPE     "APPL"
     CREATOR  "CDrc"
 )
 
-target_include_directories(CDRecon_v1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_include_directories(CDRecon_v1 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 
 # DriverLoaderLib supplies GetDriverInformation — the native-vs-classic
 # classifier for P2. Everything else resolves from InterfaceLib.
