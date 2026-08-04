@@ -64,7 +64,11 @@
  * one the driver accepts. */
 #define kTOCActionFirstLast     1   /* csParam+0: first track (BCD), +1: last   */
 #define kTOCActionLeadOut       2   /* csParam+0..2: M, S, F   (+3 pad)         */
-#define kTOCActionTrackAddrs    3   /* csParam+2: buffer addr, +6: buffer size, */
+#define kTOCActionTrackAddrs    3   /* csParam+2: buffer addr (long),           */
+                                    /* +6: buffer size — as a WORD: a long here */
+                                    /*     would cover 6..9 and overlap the     */
+                                    /*     track byte at +8, so the layout      */
+                                    /*     cannot be long-at-6 plus byte-at-8   */
                                     /* csParam+8: starting track (BCD)          */
 #define kTOCActionSessionInfo   5   /* csParam+0..1 first session, +2..3 last,  */
                                     /* +4 first track, +6..9 MSF                */

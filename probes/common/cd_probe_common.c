@@ -464,10 +464,15 @@ void CDReadTOC(short refNum, CDTOC *toc)
         tocBuf = (unsigned char *)NewPtrClear(4 * n);
         if (tocBuf == NULL) { CDLogf("  (out of memory for TOC buffer)"); return; }
 
+        /* csParam+2 = buffer address (long), +6 = buffer size, +8 = starting
+         * track in BCD. The size MUST be written as a word: a long at +6 would
+         * cover bytes 6..9 and so overlap the track byte at +8, which means the
+         * layout cannot be long-at-6 plus byte-at-8. Word-at-6 is the only
+         * self-consistent reading of the field list. */
         memset(param, 0, sizeof(param));
         param[0] = kTOCActionTrackAddrs;
-        *(Ptr *)&param[1]  = (Ptr)tocBuf;
-        *(long *)&param[3] = (long)(4 * n);
+        *(Ptr *)&param[1] = (Ptr)tocBuf;
+        param[3]          = (short)(4 * n);
         ((unsigned char *)param)[8] = kBinToBCD(toc->firstTrack);
 
         CDLogStep("ReadTOC track-addresses (n=%d)", n);
@@ -475,8 +480,8 @@ void CDReadTOC(short refNum, CDTOC *toc)
         if (terr != noErr) {
             memset(param, 0, sizeof(param));
             param[0] = (short)(kTOCActionTrackAddrs << 8);
-            *(Ptr *)&param[1]  = (Ptr)tocBuf;
-            *(long *)&param[3] = (long)(4 * n);
+            *(Ptr *)&param[1] = (Ptr)tocBuf;
+            param[3]          = (short)(4 * n);
             ((unsigned char *)param)[8] = kBinToBCD(toc->firstTrack);
             terr = CDControlCall(refNum, kcsReadTOC, param, sizeof(param),
                                  NULL, 0);
