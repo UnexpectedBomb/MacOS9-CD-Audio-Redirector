@@ -182,7 +182,7 @@ void CDLogStep(const char *fmt, ...)
     CDProgressSay("%s", buf);     /* on screen too: this is the hang breadcrumb */
 }
 
-void CDLogHex(const char *tag, const void *p, long n)
+void CDLogHexAt(const char *tag, const void *p, long n, long baseOff)
 {
     const unsigned char *b = (const unsigned char *)p;
     char  line[128];
@@ -195,9 +195,14 @@ void CDLogHex(const char *tag, const void *p, long n)
         for (i = 0; i < chunk; i++)
             used += snprintf(line + used, sizeof(line) - used,
                              "%02X ", b[off + i]);
-        CDLogf("  %s +%04ld: %s", tag, off, line);
+        CDLogf("  %s +%04lX: %s", tag, baseOff + off, line);
         off += chunk;
     }
+}
+
+void CDLogHex(const char *tag, const void *p, long n)
+{
+    CDLogHexAt(tag, p, n, 0);
 }
 
 void CDPToC(ConstStr255Param src, char *dst, int dstSize)

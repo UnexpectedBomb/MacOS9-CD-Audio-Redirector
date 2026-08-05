@@ -361,3 +361,109 @@ catches `AudioPlay`, and routes it to this engine. Note from Phase 0 that status
 synthesis is mandatory — the driver's own `AudioStatus`/`ReadQ` report a frozen
 position, so the extension must answer those polls from its own playback cursor
 using the byte layouts captured above.
+
+---
+
+# Phase 2 pre-work findings — hardware, 2026-08-05
+
+Machine: Mac mini G4, Mac OS 9. Artifact: `CDCtlDump_v1` (read-only). Raw log:
+`logs/2026-08-05-CDCtlDump_v1-mini.log`.
+
+**The blocking question is answered, and the answer is a third possibility neither
+FEASIBILITY.md nor PHASE2.md anticipated: `.AppleCD`'s entry points are not 68K code
+and not stubs jumping to 68K code. They are Mixed Mode routine descriptors wrapping
+native PowerPC routines.**
+
+## All five DRVR entries are `0xAAFE` routine descriptors
+
+`GetPtrSize(dCtlDriver)` = **476 bytes**, `MemError` = 0. That alone says the block
+is a shell, not a driver — a real ATAPI CD driver is many KB. The contents confirm
+it: DRVR header, some 68K glue, then five 32-byte routine descriptors, then a name.
+
+Reconstructed at their true offsets:
+
+| Entry | Offset | `procDescriptor` (TVector) |
+|---|---|---|
+| Open | 0x114 | 0x017678F8 |
+| Prime | 0x134 | 0x017678F0 |
+| **Control** | **0x154** | **0x017678E8** |
+| Status | 0x174 | 0x017678E0 |
+| Close | 0x194 | 0x017678D8 |
+
+Every one has the identical shape:
+
+```
++00: AA FE 07 00 00 00 00 00 00 00 00 00 00 17 98 22
++10: 00 01 00 04 01 76 78 E8 00 00 00 00 00 00 00 00
+     │  │     │  └ procDescriptor = the PPC TVector
+     │  │     └ routineFlags = 0x0004
+     │  └ ISA = 0x01 = kPowerPCISA
+     └ (procInfo 0x00179822 ends here)
+```
+
+- `0xAAFE` = `_MixedModeDispatch`, the routine-descriptor magic.
+- version 7, routineCount 0 (one routine).
+- **`procInfo` = 0x00179822.** Low nibble 2 = **`kRegisterBased`**, result size code 2
+  = a word, result register D0 — exactly the classic DRVR contract (A0 = ParmBlkPtr,
+  A1 = DCtlPtr in, OSErr in D0 out), expressed so Mixed Mode can marshal it.
+- **`ISA` = 1 = PowerPC.** The implementations are native.
+- The five TVectors are 8 bytes apart in a contiguous array (0x017678D8…F8), in
+  reverse entry order — a TVector table, as expected for a CFM fragment's exports.
+
+Also recorded: a 5-character Pascal name (`"AZBay"`) near 0x1B4, and `dCtlFlags`
+0x7D24 decoded — `dReadEnable`, `dCtlEnable`, `dStatEnable`, `dNeedGoodbye`,
+**`dNeedTime`**, `dNeedLock` all set, `dRAMBased` clear. `dCtlDelay` = 120 ticks.
+`dNeedTime` being set confirms the driver already receives periodic `accRun`
+(csCode 65) Control calls at task level, which PHASE2.md §2 wanted as the refill pump.
+
+## What this settles — the good news
+
+**PHASE2.md §3's blocking question dissolves in the best possible way.** The Control
+entry is neither an RTS-style 68K routine nor a `jIODone` jumper: it is a **callable
+routine descriptor that returns normally**. So a patch can:
+
+1. chain to the original by its address, and
+2. **inspect and rewrite `csParam` after it returns** — which is exactly what
+   synthesising `AudioStatus` and `ReadQ` requires, and Phase 0 proved that
+   synthesis is mandatory.
+
+Better still, we do not have to *construct* a descriptor to chain: the original's
+descriptor address is reused as-is, and calling it from either 68K (set A0/A1, JSR —
+the `0xAAFE` word traps into Mixed Mode) or PowerPC (`CallUniversalProc` with
+procInfo 0x00179822) works.
+
+It also refines, without reversing, the Phase 0 conclusion. The **driver structure
+is** a classic DRVR — the header cross-checked five ways and `drvrCtl` = 0x154 is
+where the Control entry lives. What is *not* 68K is the code behind it. "Patch the
+DRVR Control entry" remains correct; "the entry is 68K code" was wrong.
+
+## ⚠ What this breaks — the toolchain
+
+PHASE2.md §2 chose an **all-68K** engine, on the reasoning that the entry we patch is
+68K code so the patch must be 68K anyway. **That premise is now false**, and worse:
+
+**This Retro68 installation is PowerPC-only.** There is no `m68k-apple-macos`
+toolchain directory, no m68k gcc in `toolchain/bin`, and no 68K CMake toolchain file
+— only `powerpc-apple-macos`. Retro68's own `Samples/SystemExtension` says
+"PowerPC is not currently supported here" for code resources, and a classic INIT
+*is* a 68K code resource.
+
+**⇒ With the toolchain as installed, no INIT of any kind can be built.** That is not
+a Phase 2 detail; it decides the shape of the shipped artifact, and it is recorded as
+an open decision rather than settled unilaterally. See PHASE2.md §7.
+
+## Probe bugs found and fixed
+
+- **`GetPtrSize` floor rejected the correct answer.** The check required
+  `sz >= 0x200`; the real size was 476, so the probe fell back to a 1536-byte window
+  and read ~1060 bytes past the end of the allocation. It did not fault only because
+  the neighbouring heap was mapped — and that guard existed specifically to prevent
+  the over-read. Floor lowered to 0x80. Everything in the `drvr` dump beyond
+  +0x1DC is neighbouring heap, not driver content.
+- **`CDLogHex` restarted its offset at 0 on every call**, and `DumpCode` fed it 16
+  bytes at a time, so all 96 lines of the driver dump printed `+0000` and the true
+  offsets had to be reconstructed by counting lines. Added `CDLogHexAt`, and offsets
+  now print in hex rather than decimal.
+- **The jump decoder did not know `0xAAFE`**, so it reported "not a recognised jump ⇒
+  the Control code appears to start here", which was actively misleading. It now
+  recognises and decodes routine descriptors, printing procInfo, ISA and TVector.

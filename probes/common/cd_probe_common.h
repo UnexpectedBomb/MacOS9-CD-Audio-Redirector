@@ -82,7 +82,12 @@ void CDLogf(const char *fmt, ...);
  * every driver call. */
 void CDLogStep(const char *fmt, ...);
 
+/* Hex dump. Offsets are printed in HEX (a decimal offset in a hex dump is just
+ * cruel) and relative to baseOff, so a caller feeding the dump in chunks still
+ * gets true offsets — CDLogHex restarts at 0 every call, which made a 1.5 KB
+ * chunked driver dump print "+0000" on all 96 lines. */
 void CDLogHex(const char *tag, const void *p, long n);
+void CDLogHexAt(const char *tag, const void *p, long n, long baseOff);
 
 /* Pascal → C string, bounded, for logging. */
 void CDPToC(ConstStr255Param src, char *dst, int dstSize);

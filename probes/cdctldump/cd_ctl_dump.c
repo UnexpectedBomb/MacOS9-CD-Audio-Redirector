@@ -117,7 +117,11 @@ static void DumpCode(const char *tag, const unsigned char *base, long bytes)
         if ((off & 0xFF) == 0) {
             CDLogStep("%s dumping +0x%04lX", tag, off);
         }
-        CDLogHex(tag, base + off, n);
+        /* CDLogHexAt, not CDLogHex: the latter restarts its offset at 0 on every
+         * call, so feeding it 16 bytes at a time printed "+0000" on all 96 lines
+         * of the first driver dump and the offsets had to be reconstructed by
+         * counting lines. */
+        CDLogHexAt(tag, base + off, n, off);
     }
 }
 
@@ -133,6 +137,34 @@ static const unsigned char *DecodeFirstJump(const unsigned char *p,
     unsigned short op = (unsigned short)((p[0] << 8) | p[1]);
 
     *whatOut = "not a recognised jump";
+
+    /* ★ 0xAAFE is _MixedModeDispatch: this is not 68K code at all, it is a Mixed
+     * Mode RoutineDescriptor. The v1 probe did not know this shape and reported
+     * "not a recognised jump ⇒ the code appears to start here", which was wrong in
+     * a way that would have mattered. All five of .AppleCD's entries turn out to
+     * be exactly this, wrapping native PowerPC routines. */
+    if (op == 0xAAFE) {
+        unsigned char  isa    = p[13];
+        unsigned long  proc   = ((unsigned long)p[16] << 24)
+                              | ((unsigned long)p[17] << 16)
+                              | ((unsigned long)p[18] << 8)
+                              |  (unsigned long)p[19];
+        unsigned long  info   = ((unsigned long)p[8]  << 24)
+                              | ((unsigned long)p[9]  << 16)
+                              | ((unsigned long)p[10] << 8)
+                              |  (unsigned long)p[11];
+        CDLogf("  ⇒ MIXED MODE ROUTINE DESCRIPTOR, not 68K code:");
+        CDLogf("      version=0x%02X flags=0x%02X routineCount=%d",
+               p[2], p[3], (int)((p[10] << 8) | p[11]));
+        CDLogf("      procInfo=0x%08lX  (low nibble %lu: 2 = kRegisterBased)",
+               info, info & 0x0F);
+        CDLogf("      ISA=0x%02X  (0 = 68K, 1 = PowerPC)", isa);
+        CDLogf("      procDescriptor (TVector) = 0x%08lX", proc);
+        CDLogf("      ⇒ this entry is a CALLABLE routine that RETURNS normally,");
+        CDLogf("        so a patch can chain to it and then rewrite csParam.");
+        *whatOut = "Mixed Mode routine descriptor (see the decode above)";
+        return NULL;   /* the target is PPC code; not 68K to follow */
+    }
 
     /* JMP xxx.L  — 4EF9 followed by a 32-bit absolute address */
     if (op == 0x4EF9) {
@@ -264,7 +296,13 @@ int main(void)
         memErr = MemError();
         CDLogf("  GetPtrSize = %ld, MemError = %d", (long)sz, memErr);
 
-        if (memErr == noErr && sz >= 0x200 && sz <= 0x100000) {
+        /* The floor used to be 0x200, which REJECTED the real answer: the block
+         * turned out to be 476 bytes (a DRVR shell of header + five descriptors),
+         * so the probe fell back to a 1536-byte window and read ~1060 bytes past
+         * the end of the allocation. It did not fault, because the neighbouring
+         * heap was mapped, but the guard existed precisely to prevent that. A few
+         * hundred bytes is a perfectly plausible size for a driver shell. */
+        if (memErr == noErr && sz >= 0x80 && sz <= 0x100000) {
             dumpBytes = (sz < kMaxDumpBytes) ? (long)sz : kMaxDumpBytes;
             CDLogf("  ⇒ trusting GetPtrSize; dumping %ld bytes", dumpBytes);
         } else {
