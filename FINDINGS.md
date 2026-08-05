@@ -899,3 +899,42 @@ Safety properties that make this different from every earlier attempt:
 **No trace reader yet, deliberately.** The two questions this run answers are "does it
 crash" and "does iTunes still work". Reading the ring needs a publication channel for the
 engine's globals, and that is worth building only once the patch is known to be safe.
+
+## Step 3 run 1 — THE PATCH WORKS
+
+```
+=== OPTION HELD: patching the Control descriptor ===
+PEF copied to the SYSTEM heap at 0x018C45D0
+GetDriverMemoryFragment err=0 connID=0x00000AE4 main=0x018A8BFC
+SetDriverClosureMemory err=0
+status=0 (OK - descriptor validated)
+ORIGINAL TVector = 0x01766DE8 -> code=0x01763CE0 toc=0x0176EC10
+OUR      TVector = 0x018A8BF0 -> code=0x018C464C toc=0x018A8C08
+patch returned 0, status=0, patched=1
+⇒ PATCHED, and read back correct. The Control descriptor now
+  points at 0x018A8BF0 instead of 0x01766DE8.
+```
+
+**The interposition succeeded and the machine stayed up.** First time in the project that
+the real ATAPI `.AppleCD` has been interposed without a crash. Details worth keeping:
+
+- `patched=1` and the read-back matched, so the descriptor genuinely holds our TVector.
+- Our code at `0x018C464C` is `0x018C45D0 + 0x7C`, inside the system-heap PEF copy.
+- The app **ran to completion and quit normally**. That matters: a modal alert pumps
+  `SystemTask`, which delivers `accRun` (csCode 65) to this driver, so our handler was
+  called — repeatedly — within milliseconds of the patch, and chained correctly.
+
+### Why this worked where three 68K attempts crashed
+
+The 68K shell inserted a second 68K↔PPC boundary into a driver entry that previously took
+exactly one Mixed Mode transition. This build inserts none: the Device Manager still JSRs
+the same descriptor with the same `procInfo` and `ISA`, Mixed Mode performs the same single
+transition, and it lands in our PowerPC routine. Chaining is an ordinary indirect call
+through the saved TVector. The DRVR header, the driver's name, its address and
+`dCtlDriver` were never touched.
+
+### ⚠ Still outstanding: the coexistence test
+
+Not yet run. **Does iTunes still read the audio CD, and does `CDRecon_v2` still show the
+`Audio CD 1` volume, with the patch live?** That is what killed the 68K generation, and it
+must be tested in the same boot session — the patch does not survive a restart.
