@@ -332,19 +332,24 @@ static OSErr PlayStream(OSType format, const char *label)
     return noErr;
 }
 
-/* ---- stage A: preloaded, played twice with opposite byte order ------------ */
-
-/* Byte-swap 16-bit samples in place. Used between A1 and A2 so only one copy of
- * the audio has to be held in memory. */
-static void SwapInPlace(unsigned char *p, long bytes)
-{
-    long i;
-    for (i = 0; i + 1 < bytes; i += 2) {
-        unsigned char t = p[i];
-        p[i]     = p[i + 1];
-        p[i + 1] = t;
-    }
-}
+/* ---- stage A: preloaded, played twice ------------------------------------- *
+ * ★ v1's version of this test did not discriminate, and the 2026-08-05 run proved
+ * it the hard way. A1 was LE data tagged 'sowt' and A2 was BYTE-SWAPPED data
+ * tagged 'twos' — two changes that cancel out. Both arms were self-consistent, so
+ * if the Sound Manager honours dbhFormat both play correctly, which is exactly
+ * what the listener reported. The window meanwhile insisted one of them had to be
+ * noise. A test whose arms are both valid cannot tell you which one the system
+ * prefers.
+ *
+ * The discriminating shape needs ONE MATCHED and ONE DELIBERATELY MISMATCHED arm:
+ *   A1 = LE bytes tagged 'sowt'  (matched)   -> music iff dbhFormat is honoured
+ *   A2 = the SAME LE bytes tagged 'twos' (mismatched) -> MUST be noise iff honoured
+ * so the answers map cleanly:
+ *   first only  => dbhFormat HONOURED  (the result we already have by other means)
+ *   neither     => ignored, big-endian assumed
+ *   both        => ignored, little-endian assumed
+ * No byte swap anywhere, which also means no swap code left lying around to imply
+ * Phase 2 needs one. It does not. */
 
 static void StageA(void)
 {
@@ -422,11 +427,14 @@ static void StageA(void)
         while (TickCount() < until) (void)WaitNextEvent(0, &evt, 1, NULL);
     }
 
-    /* --- A2: 'twos', same audio byte-swapped --- */
-    CDLogf("--- A2: 'twos' (k16BitBigEndianFormat), bytes SWAPPED ---");
-    CDProgressSay("stage A2: swapping bytes for the 'twos' comparison");
-    SwapInPlace(gS.ring, gS.ringBytes);
-    gS.writeOff         = got;      /* producer cursor unchanged; data rewritten */
+    /* --- A2: the SAME LE bytes, deliberately mislabelled 'twos' --- *
+     * The bytes are untouched. If the Sound Manager honours dbhFormat this arm
+     * MUST come out as noise, and that contrast is what makes the test mean
+     * something. */
+    CDLogf("--- A2: 'twos' (k16BitBigEndianFormat) on the SAME little-endian "
+           "bytes — a deliberate mismatch, expected to be NOISE ---");
+    CDProgressSay("stage A2: same bytes mislabelled 'twos' - expect noise");
+    gS.writeOff         = got;
     gStageAErr[1]       = PlayStream(k16BitBigEndianFormat, "A2 twos");
     gStageAUnderruns[1] = gS.underruns;
     gStageARan[1]       = (gStageAErr[1] == noErr);
@@ -765,19 +773,21 @@ done:
     /* --- Q1: which byte order --- */
     if (gStageARan[0] || gStageARan[1]) {
         static const char *lines[] = {
-            "Stage A played the SAME five seconds twice:",
+            "Stage A played the SAME five seconds of audio twice, with the",
+            "SAME bytes both times. Only the format tag changed:",
             "",
-            "   FIRST  = 'sowt', bytes straight off the disc (no swap)",
-            "   SECOND = 'twos', bytes swapped",
+            "   FIRST  = tagged 'sowt' (little-endian) - the truth",
+            "   SECOND = tagged 'twos' (big-endian)    - a deliberate lie",
             "",
-            "One of them should be music. The other should be obvious",
-            "loud noise or static - wrong-endian PCM is unmistakable.",
+            "If the Sound Manager honours the tag, the first is music and",
+            "the second is loud noise. Answer what you actually heard;",
+            "every combination below means something different.",
             "",
-            "Which one sounded like music?"
+            "Which sounded like music?"
         };
-        static const char *labels[] = { "First (sowt)", "Second (twos)",
+        static const char *labels[] = { "First only", "Second only",
                                         "Both", "Neither" };
-        a1 = AskWhichSounded(lines, 9, labels, 4);
+        a1 = AskWhichSounded(lines, 12, labels, 4);
     } else {
         a1 = -1;
     }
@@ -810,8 +820,8 @@ done:
      * this call is gone. */
     CDLogf("--- listener verdicts ---");
     {
-        static const char *byteOrder[] = { "FIRST: 'sowt', no swap",
-                                           "SECOND: 'twos', swapped",
+        static const char *byteOrder[] = { "FIRST only (matched 'sowt')",
+                                           "SECOND only (mislabelled 'twos')",
                                            "BOTH sounded like music",
                                            "NEITHER sounded like music" };
         static const char *quality[]   = { "continuous", "occasional gaps",
@@ -822,17 +832,20 @@ done:
                (a2 >= 0 && a2 < 4) ? quality[a2] : "no answer");
 
         if (a1 == 0)
-            CDLogf("  ⇒ 'sowt' CONFIRMED: the Sound Manager takes CD-DA as-is. "
-                   "No byte swap in the engine, so the doubleback proc stays a "
-                   "plain copy. REVIEW.md §5 holds.");
+            CDLogf("  ⇒ 'sowt' CONFIRMED: dbhFormat is honoured, so the Sound "
+                   "Manager takes CD-DA exactly as it comes off the disc. No byte "
+                   "swap in the engine and the doubleback proc stays a plain "
+                   "copy. REVIEW.md §5 holds; FEASIBILITY §3's mandatory swap is "
+                   "not needed.");
         if (a1 == 1)
-            CDLogf("  ⇒ the swap IS required: the Sound Manager ignored "
-                   "dbhFormat='sowt'. Phase 2 must swap LE->BE in the "
-                   "doubleback proc, as FEASIBILITY §3 assumed.");
+            CDLogf("  ⇒ inverted from expectation: the mislabelled arm was the "
+                   "audible one. Re-check which buffer played before concluding "
+                   "anything.");
         if (a1 == 2)
-            CDLogf("  ⇒ both audible: suspicious. Either dbhFormat is being "
-                   "ignored in a way that happens to be inaudible, or the swap "
-                   "did not happen. Check the A2 log lines before trusting this.");
+            CDLogf("  ⇒ dbhFormat appears to be IGNORED with little-endian "
+                   "assumed: both a true and a false tag played correctly over "
+                   "identical bytes. Harmless for us (the data is already LE) but "
+                   "do not rely on the tag.");
         if (a1 == 3)
             CDLogf("  ⇒ neither audible: the engine, the channel or the output "
                    "routing is wrong, not the byte order. Check "

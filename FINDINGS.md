@@ -1,3 +1,7 @@
+# Findings — hardware
+
+Phase 0 below, then **[Phase 1](#phase-1-findings--hardware-2026-08-05)** at the end.
+
 # Phase 0 findings — hardware, 2026-08-05
 
 Machine: Mac mini G4, Mac OS 9. Disc: ordinary pressed audio CD, 12 tracks.
@@ -246,3 +250,114 @@ has an answer:
 
 Phase 1 (DAE → Sound Manager spike) is unblocked and can be built and validated on
 the mini itself, since P4's read path is proven on that machine.
+
+---
+
+# Phase 1 findings — hardware, 2026-08-05
+
+Machine: Mac mini G4, Mac OS 9. Disc: same pressed audio CD. Artifact:
+`CDAudioSpike_v1`. Raw log: `logs/2026-08-05-CDAudioSpike_v1-mini.log`.
+
+**Bottom line: Phase 1 succeeded. DAE → Sound Manager works, streaming sustains in
+real time, and no byte swap is needed.** Phase 2 can be built on this engine.
+
+## The engine works (Q2)
+
+```
+SndNewChannel(sampledSynth, initStereo) err=0
+A1 sowt: SndPlayDoubleBuffer err=0, callbacks=20, delivered=882000/882000, underruns=0
+A2 twos: SndPlayDoubleBuffer err=0, callbacks=20, delivered=882000/882000, underruns=0
+```
+
+`compressionID = notCompressed` (0) was accepted on the first attempt, so the
+`fixedCompression` fallback never fired. Channel setup, 44.1 kHz, stereo and the
+interrupt-time doubleback proc are all correct. Block size switched to 2352 and
+restored to 512 on the way out.
+
+## Streaming sustains in real time (Q3)
+
+```
+pre-roll complete: 352800 bytes, next LBA 300
+stage B done: delivered=5292000/5292000 callbacks=120 UNDERRUNS=0
+```
+
+Listener: **continuous**, no gaps. 120 callbacks × 11025 frames = exactly 30.0 s of
+audio, i.e. the Sound Manager consumed at real time throughout, so sustained read
+throughput during playback met or beat the 176,400 B/s CD-DA requires.
+
+**⇒ A 2-second ring with 32-sector (75 KB) reads refilled at task level is
+sufficient. Zero underruns over 30 s.**
+
+### ⚠ The logged "106 KB/s" throughput figure is wrong — do not size Phase 2 from it
+
+```
+read 882000 of 882000 bytes in 485 ticks = 106 KB/s (CD-DA needs 172 KB/s to keep up)
+```
+
+That measurement is broken by design: it times a *cold* five-second read, so drive
+spin-up and the initial seek dominate a window far too short to amortise them. It
+reports below real time while stage B then streamed 30 s with zero underruns, which
+is a flat contradiction — and stage B is the trustworthy half. Any Phase 2
+read-ahead sizing needs a **warm, longer** measurement.
+
+## Byte order (Q1): `'sowt'` confirmed — but the test as written did not discriminate
+
+Listener answer: **both arms sounded like music**.
+
+**The v1 experiment was designed wrong.** A1 played little-endian bytes tagged
+`'sowt'`; A2 played *byte-swapped* bytes tagged `'twos'`. That is two changes which
+cancel: both arms were internally consistent, so if the Sound Manager honours
+`dbhFormat` both play correctly. The window nevertheless told the listener that one
+arm had to be noise. A test whose arms are both valid cannot reveal which the system
+prefers.
+
+The answer still resolves, because only one case produces "both":
+
+| Heard | Meaning |
+|---|---|
+| **Both music** | **`dbhFormat` is honoured** — both arms were matched |
+| Second only | tag ignored, big-endian assumed |
+| First only | tag ignored, little-endian assumed |
+| Neither | channel or output routing broken |
+
+Had `dbhFormat` been ignored, A1's little-endian bytes read as big-endian would have
+been unmistakable noise. They were not.
+
+**⇒ `'sowt'` works. CD-DA goes to the Sound Manager exactly as it comes off the
+disc, the doubleback proc stays a plain copy, and no per-sample byte swapping
+happens at interrupt time. REVIEW.md §5 holds and FEASIBILITY §3's "mandatory" swap
+is confirmed unnecessary.**
+
+**Fixed for any future run:** A2 now plays the *same untouched little-endian bytes*
+deliberately mislabelled `'twos'`. One matched arm, one mismatched arm, so "first
+only" means the tag is honoured and every other answer means something distinct. The
+byte-swap helper is gone entirely, so no dead code implies Phase 2 might need one.
+
+## Bug found and fixed: a second `CDLogOpen` silently discarded the log
+
+The listener verdicts were never written. `main()` called `CDLogOpen` again before
+recording them, on the mistaken belief the log had been closed — it had only been
+flushed. A second `FSpOpenDF` on a file already open for writing returns `opWrErr`,
+the old refNum leaked, `gLogRef` was left at 0, and every subsequent `CDLogf`
+vanished without a word. The verdicts are the entire reason the run existed.
+
+CDPlayProbe did not have that extra call, which is why its verdict recorded fine in
+Phase 0. Fixed twice over: the redundant call is gone, and `CDLogOpen` is now
+idempotent so this class of mistake cannot silently discard a log again.
+
+## Where this leaves the project
+
+| Question | Answer |
+|---|---|
+| Does DAE → Sound Manager work end to end? | **Yes**, audible on the mini |
+| Byte swap needed? | **No** — `'sowt'` honoured |
+| `compressionID` | `notCompressed` (0) |
+| Ring size sufficient? | **2 s**, 32-sector reads, 0 underruns over 30 s |
+| Sustained throughput | ≥ real time (the 106 KB/s figure is a cold-read artifact) |
+| Interception target (Phase 0) | classic DRVR `Control`, `dCtlDriver + 0x0154`, 68K |
+
+**Phase 2 is unblocked**: the INIT that patches the CD driver's Control entry,
+catches `AudioPlay`, and routes it to this engine. Note from Phase 0 that status
+synthesis is mandatory — the driver's own `AudioStatus`/`ReadQ` report a frozen
+position, so the extension must answer those polls from its own playback cursor
+using the byte layouts captured above.
