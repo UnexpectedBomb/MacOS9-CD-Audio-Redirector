@@ -101,7 +101,14 @@ enum {
     kInstallNotDRVRShape    = 4,   /* header did not look like a DRVR          */
     kInstallNoMemory        = 5,
     kInstallAlreadyPatched  = 6,   /* our magic is already there               */
-    kInstallRAMBased        = 7    /* dCtlDriver is a Handle; not handled yet  */
+    kInstallRAMBased        = 7,   /* dCtlDriver is a Handle; not handled yet  */
+    kInstallNotATAPIDriver  = 8    /* the Control entry is not a 0xAAFE Mixed  */
+                                   /* Mode descriptor, so this is NOT the      */
+                                   /* ATAPI .AppleCD the design targets — seen */
+                                   /* during the extension parade, where an    */
+                                   /* earlier incarnation of the driver is in  */
+                                   /* place. Refuse and let a later install    */
+                                   /* catch the real one.                      */
 };
 
 #endif /* CD_PATCH_SHELL_H */

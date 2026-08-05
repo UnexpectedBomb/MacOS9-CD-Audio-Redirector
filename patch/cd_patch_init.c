@@ -88,6 +88,8 @@ static const char *ResultText(short r)
         case kInstallAlreadyPatched: return "CD Patch 2a: already patched";
         case kInstallRAMBased:       return "CD Patch 2a: driver is Handle-based, "
                                             "refused";
+        case kInstallNotATAPIDriver: return "CD Patch 2a: not the ATAPI driver yet "
+                                            "(too early - install post-boot)";
         default:                     return "CD Patch 2a: unknown result";
     }
 }

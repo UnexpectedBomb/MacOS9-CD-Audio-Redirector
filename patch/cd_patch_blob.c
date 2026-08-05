@@ -326,6 +326,25 @@ short _start(void)
     if (orig->drvrCtl < 0x12 || (unsigned short)orig->drvrCtl > 0x4000)
         return kInstallNotDRVRShape;
 
+    /* ★ Require the ATAPI driver we actually characterised, and refuse anything else.
+     *
+     * The first successful boot install taught this the hard way. During the extension
+     * parade, unit 65's dCtlDriver pointed at 0x00FFE02E with entry offsets 0x30,
+     * 0x40, 0x100, 0x106 — nothing like the ATAPI '.AppleCD' Phase 0 dumped
+     * (0x114/0x134/0x154/0x174/0x194, every entry a 0xAAFE Mixed Mode descriptor
+     * wrapping native PowerPC). So the INIT patched an EARLY, DIFFERENT incarnation of
+     * the driver, not the one the whole design was built against.
+     *
+     * The signature of the right one is unmistakable: its Control entry begins with
+     * 0xAAFE. Checking for that turns "did we happen to run late enough?" into a
+     * decision the code makes for itself — at INIT time this fails and the install
+     * cleanly declines, and post-boot it succeeds. */
+    {
+        unsigned char *ctl = origBase + (unsigned short)orig->drvrCtl;
+        unsigned short op  = (unsigned short)((ctl[0] << 8) | ctl[1]);
+        if (op != 0xAAFE) return kInstallNotATAPIDriver;
+    }
+
     /* Already ours? Re-patching would lose the original pointer. */
     {
         CDPatchInfo *maybe = (CDPatchInfo *)(origBase + kInfoOffset);
@@ -351,10 +370,25 @@ short _start(void)
     shell->drvrCtl    = kStubCtl;
     shell->drvrStatus = kStubStatus;
     shell->drvrClose  = kStubClose;
-    shell->name[0]    = 8;
-    shell->name[1] = '.'; shell->name[2] = 'C'; shell->name[3] = 'D';
-    shell->name[4] = 'A'; shell->name[5] = 'u'; shell->name[6] = 'd';
-    shell->name[7] = 'i'; shell->name[8] = 'o';
+
+    /* ★ KEEP THE ORIGINAL NAME, byte for byte.
+     * v1 gave the shell its own name, ".CDAudio". On hardware that showed up in the
+     * unit table in place of ".AppleCD", and iTunes then could not recognise an audio
+     * CD that it had read fine before. Anything that finds this driver by name —
+     * OpenDriver, Audio CD Access, the mounting machinery — must keep finding it.
+     * We are impersonating the driver, so we have to look exactly like it. Renaming
+     * it was gratuitous. */
+    {
+        short nameLen = orig->drvrName[0];
+        short k;
+        if (nameLen < 1 || nameLen > (short)(sizeof(shell->name) - 1)) {
+            DisposePtr((Ptr)gRing);
+            DisposePtr((Ptr)shell);
+            gRing = NULL;
+            return kInstallNotDRVRShape;
+        }
+        for (k = 0; k <= nameLen; k++) shell->name[k] = orig->drvrName[k];
+    }
 
     /* Four stubs tail-jump to the original's own entries; only Control is ours. */
     PutJump(&shell->stubs[kStubOpen   - kStubOpen], origBase + orig->drvrOpen);

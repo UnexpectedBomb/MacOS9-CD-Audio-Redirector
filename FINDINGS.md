@@ -476,3 +476,116 @@ open. Pipeline and residency details are recorded there.
 - **The jump decoder did not know `0xAAFE`**, so it reported "not a recognised jump ⇒
   the Control code appears to start here", which was actively misleading. It now
   recognises and decodes routine descriptors, printing procInfo, ISA and TVector.
+
+---
+
+# Phase 2a findings — hardware, 2026-08-05
+
+Artifacts: `CDPatch2a` (extension) + `CDPatchInstall` + `CDTraceDump_v1`.
+Logs: `logs/2026-08-05-CDPatch2a-boot2-mini.log`,
+`logs/2026-08-05-CDTraceDump-boot2-mini.log`.
+
+**2a WORKS. The patch installs, is called, and passthrough is transparent enough that
+the machine and CDRecon carried on normally.** 126 Control calls captured. Two real
+defects found, both mine, and one design premise corrected.
+
+## The interception mechanism is proven
+
+```
+=== PATCH IS INSTALLED ===
+  version=1  origDriver=0x00FFE02E  ring=0x01599390  ringEntries=512
+  callCount=126  audioCallCount=3  writeCount=126
+```
+
+- The **revised passive unit-table name scan works at INIT time** — `CD Patch 2a:
+  INSTALLED` at boot, where v1's drive-queue scan had found nothing.
+- `dCtlDriver` points at our shell, and the shell's stubs are correct: four tail-jump
+  into the original, only Control comes to us.
+- The `already patched` guard fired correctly when `CDPatchInstall` ran afterwards.
+- The machine stayed up, `CDRecon` read the TOC through the patch (its
+  `ChangeBlockSize` and `ReadTOC` calls are visible in the trace), and the drive
+  mounted.
+
+## ★ The Phase 2b answer: the calls we must synthesise are QUEUED
+
+106 immediate, 20 queued — and *which* ones matters far more than the ratio:
+
+| csCode | count | trap | |
+|---|---|---|---|
+| 65 accRun | 103 | 0xA204 | IMMEDIATE |
+| 100 ReadTOC | 14 | 0xA004 | queued |
+| 79 ChangeBlockSize | 2 | 0xA004 | queued |
+| 43 DriverGestalt | 2 | 0xA204 | IMMEDIATE |
+| 22 GetMediaIcon | 2 | 0xA004 | queued |
+| 109 AudioControl | 1 | 0xA204 | IMMEDIATE |
+| **107 AudioStatus** | 1 | 0xA004 | **queued** |
+| **101 ReadQ** | 1 | 0xA004 | **queued** |
+
+`AudioStatus` and `ReadQ` — the two calls Phase 0 proved we *must* synthesise — arrive
+**queued**. So the original ends at `jIODone` and never returns to us, and 2b cannot
+call it and then rewrite `csParam`.
+
+**This is fine, and it resolves cleanly.** The codes we need to rewrite are exactly the
+codes we do not need the original's answer for: 2b answers `AudioStatus` and `ReadQ`
+from its own playback cursor. So it never chains for those — it completes the request
+itself, the way `libDRVRRuntime` does: result in D0, then push `jIODone` and `RTS` when
+`noQueueBit` is clear, plain `RTS` when it is set. Both endings must be implemented,
+because `AudioControl` came through immediate while `AudioStatus` came through queued.
+
+## ⚠ Defect 1: renaming the shell broke iTunes
+
+v1 gave the shell its own name, `.CDAudio`. On hardware the unit table then read:
+
+```
+  unit 65 refNum -66  '.CDAudio'
+```
+
+where it had read `.AppleCD` before, and **iTunes could no longer recognise an audio CD
+it had read fine earlier in the project**. Anything that finds this driver by name —
+`OpenDriver`, Audio CD Access, the mounting machinery — has to keep finding it. We are
+impersonating the driver, so we have to look exactly like it.
+
+**Fixed:** the shell now copies the original's name byte for byte. The rename was
+gratuitous and there was never a reason for it.
+
+## ⚠ Defect 2: the INIT patched a DIFFERENT driver than the one Phase 0 characterised
+
+This is the more important finding. The saved original was:
+
+```
+  origDriver=0x00FFE02E
+  stubs +0020: 4E F9 00 FF E1 2E  4E F9 00 FF E0 5E  4E F9 01 5B 62 10
+  stubs +0030: 4E F9 00 FF E0 6E  4E F9 00 FF E1 34
+```
+
+Those tail-jump targets imply entry offsets of **0x100 (open), 0x30 (prime), 0x40
+(status), 0x106 (close)** from `0x00FFE02E`. The ATAPI `.AppleCD` that Phase 0 and the
+Phase-2 dump characterised has offsets **0x114 / 0x134 / 0x154 / 0x174 / 0x194**, each
+entry a `0xAAFE` Mixed Mode descriptor wrapping native PowerPC, and lived at a RAM
+address around `0x0164xxxx`.
+
+So during the extension parade, unit 65's `dCtlDriver` pointed at an **earlier,
+different incarnation** of the driver — a different shape at a different address — and
+the INIT patched that. Everything still worked, because our passthrough is a faithful
+tail jump, but we were not intercepting the driver the whole design was built against.
+It is also a plausible contributor to the iTunes regression alongside the rename.
+
+**Fixed, and turned into a decision the code makes for itself:** the install now
+requires the original's Control entry to begin with `0xAAFE`. That is the unmistakable
+signature of the driver we characterised. At INIT-parade time the check fails and the
+install cleanly declines (`kInstallNotATAPIDriver`); post-boot it succeeds. No more
+"did we happen to run late enough?".
+
+**⇒ Consequence for the vehicle:** an INIT runs too early to catch the real driver. The
+patch should be installed **post-boot** — from `CDPatchInstall` for testing, and from a
+faceless Startup-Items app for shipping. That is the same conclusion the USB2 work
+reached for its own reasons (`reference_os9_init_resident_driver`: the shippable auto-run
+vehicle is a top-level process, not an INIT), now reached here on direct evidence. The
+INIT stays in the build as a harmless no-op that declines politely, and as the vehicle
+to revisit if the driver ever turns out to be patchable that early.
+
+## Minor
+
+`CDPatchInstall` logs the blob's address as `0x` followed by a **decimal** number
+(`AppendNum` is decimal). Cosmetic, but misleading in a log; worth fixing next time the
+file is touched.

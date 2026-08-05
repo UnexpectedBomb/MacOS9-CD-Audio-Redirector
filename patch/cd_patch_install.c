@@ -213,6 +213,7 @@ static const char *ResultText(short r)
         case kInstallNoMemory:       return "out of system memory";
         case kInstallAlreadyPatched: return "already patched";
         case kInstallRAMBased:       return "driver is Handle-based, refused";
+        case kInstallNotATAPIDriver: return "not the ATAPI driver yet (too early - install post-boot)";
         default:                     return "unknown result";
     }
 }
