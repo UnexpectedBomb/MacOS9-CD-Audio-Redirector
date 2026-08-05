@@ -2,15 +2,21 @@
 
 Written 2026-08-05, after Phase 1 succeeded.
 
-> **⚠ UPDATED after `CDCtlDump_v1` ran (see FINDINGS.md, Phase 2 pre-work).**
-> §3's blocking question is **answered and dissolved**: the Control entry is a Mixed
-> Mode routine descriptor wrapping native PowerPC, so it is a callable routine that
-> returns normally, and a patch can chain to it and then rewrite `csParam`. Good news.
+> **⚠ UPDATED TWICE on 2026-08-05.**
 >
-> But §2's **all-68K decision is dead**: its premise (that the entry is 68K code) was
-> false, and this Retro68 installation has **no m68k toolchain at all**, so no INIT of
-> any kind can currently be built. **§7 is the open decision that must be settled
-> before the vehicle is written.** Read §7 before §2.
+> After `CDCtlDump_v1` ran: §3's blocking question is **answered and dissolved**. The
+> Control entry is a Mixed Mode routine descriptor wrapping native PowerPC, so it is
+> a callable routine that returns normally, and a patch can chain to it and then
+> rewrite `csParam`. See FINDINGS.md, Phase 2 pre-work.
+>
+> Then, correcting my own error: **the m68k toolchain was already installed all
+> along**, at `~/Retro68-build/toolchain-m68k`. I had looked only in
+> `~/Retro68-build/toolchain/` and wrongly concluded the install was PowerPC-only,
+> which made §7 escalate a multi-hour toolchain build as an open decision. There was
+> nothing to decide and nothing to build. **§7 is resolved: the INIT is the vehicle.**
+>
+> §2's *premise* ("the entry we patch is 68K code") is still false, but its
+> *conclusion* — an all-68K engine — survives for different reasons. See §2's note.
 
 ## 1. What Phase 0 and 1 already settled
 
@@ -31,8 +37,17 @@ Nothing here is speculation any more:
 
 The engine is going to be **68K code**, not a PPC fragment.
 
-The Control entry we are patching *is* 68K code, so the patch has to be 68K
-whatever else happens. The question is only where the engine lives. A PPC engine
+> **Premise corrected.** The entry we patch is *not* 68K code — it is a PPC routine
+> descriptor (FINDINGS.md, Phase 2 pre-work). The conclusion below still holds, for
+> two better reasons: residency for a 68K blob is trivial (a detached code resource
+> in the system heap, relocated in place by `Retro68Relocate`, verified buildable),
+> and chaining needs **no descriptor construction at all** — we set A0/A1 and JSR the
+> original's existing descriptor, whose `0xAAFE` word traps into Mixed Mode and
+> returns to us normally.
+
+Our handler goes at `drvrCtl`, which the Device Manager calls per the classic DRVR
+contract, so raw 68K code there is correct. The question is only where the engine
+lives. A PPC engine
 would mean the proven-but-involved residency route (68K INIT →
 `InstallDriverFromMemory` of a native-driver PEF) plus a Mixed Mode boundary at the
 patch. An all-68K engine has neither: no CFM, no `InstallDriverFromMemory`, no
@@ -194,74 +209,51 @@ Non-negotiables for both:
 
 ---
 
-## 7. OPEN DECISION: what vehicle carries the patch?
+## 7. RESOLVED: the INIT is the vehicle
 
-`CDCtlDump_v1` settled the ABI question and simultaneously invalidated §2's toolchain
-choice. A classic INIT is a **68K code resource**, Retro68's own sample says
-PowerPC is not supported for code resources, and **this installation has no m68k
-toolchain** — no `m68k-apple-macos` directory, no m68k gcc, no 68K CMake file.
+**This section previously escalated an open decision that did not exist.** It claimed
+no m68k toolchain was installed and therefore no INIT could be built, and offered a
+multi-hour toolchain build against a PowerPC-only fallback. That was my error: I
+checked `~/Retro68-build/toolchain/` and its `bin/`, saw only PowerPC, and never
+looked at **`~/Retro68-build/toolchain-m68k/`** — which was sitting in a directory
+listing I had already printed, alongside a `build-68k.log` ending "Done building
+Retro68."
 
-So FEASIBILITY §2's stated goal, "one system extension (an INIT)", is not currently
-buildable. Two ways forward.
+Verified 2026-08-05 by building Retro68's own `Samples/SystemExtension` end to end:
 
-### Option A — build the m68k toolchain, keep the INIT
+- `m68k-apple-macos-gcc` 12.2.0 present
+- CMake toolchain file at
+  `~/Retro68-build/toolchain-m68k/m68k-apple-macos/cmake/retro68.toolchain.cmake`
+- output is a real `'INIT' (128, locked)` resource via `RETRO68_CODE_TYPE`,
+  53 KB MacBinary
 
-Retro68 can build both targets; the sources are in `~/Retro68/` and the build trees
-in `~/Retro68-build/`. Adding the m68k target is a multi-hour build.
+**⇒ FEASIBILITY §2's intended artifact — one system extension, dropped into
+Extensions, working from boot with nothing visible — is buildable today, at no
+toolchain cost.** The PowerPC-only fallback is not needed and is dropped.
 
-- **For:** delivers exactly the intended artifact — drop one file into Extensions,
-  it works from boot, nothing visible to the user, no Startup Items entry.
-- **Against:** hours of toolchain work, and a non-zero risk of disturbing a
-  PowerPC toolchain that currently builds everything in this project correctly.
-  `feedback_toolchain_snapshots` says snapshot before toolchain work, so that is a
-  prerequisite, not an optional extra.
-- Note the INIT would still only be the *installer*; the engine could stay PowerPC.
+### Pipeline details worth recording
 
-### Option B — PowerPC only: faceless Startup-Items app + resident native driver
+- The `.r` file `$$read`s the `.flt` **by a fixed filename**, so the CMake target's
+  `OUTPUT_NAME` must match what the `.r` expects, or Rez fails with
+  `could not $$read file`.
+- Rez needs `-I <prefix>/RIncludes` explicitly; without it the first `#include` in
+  the `.r` fails as `could not find include file`.
+- Build with `add_executable` plus `LINK_FLAGS -Wl,--mac-flat` — *not*
+  `add_application`.
 
-Recommended, and it is the arrangement this project has already validated once.
-`reference_os9_init_resident_driver` records the USB2 conclusion verbatim: a resident
-INIT cannot give post-boot work top-level task context, so **the shippable auto-run
-vehicle is a top-level process, not an INIT** — a faceless background app hidden via
-SIZE flags (`modeCanBackground|modeOnlyBackground|modeHighLevelEventAware` = 0x14C0).
+### Residency mechanism, verified available
 
-Shape:
+`Retro68Runtime.h` exports `Retro68Relocate` and `Retro68ApplyRelocations(base, size,
+relocations, displacements)`, and the sample INIT calls `RETRO68_RELOCATE()` at entry.
+So a flat 68K blob can be relocated to wherever it is loaded, which is what a resident
+code resource needs:
 
-1. **The engine** is a native driver PEF, made resident with `InstallDriverFromMemory`
-   so it is owned by the system Unit Table and survives whatever launched it. This is
-   the pattern proven on hardware for USB2 (R2b-3).
-2. **A faceless Startup-Items app** installs the DCE patch and then stays running as
-   the task-level pump for ring refills.
-3. **Our patch entry** is our own Mixed Mode routine descriptor with
-   `ISA = kPowerPCISA` and `procInfo = 0x00179822` — *exactly mirroring what
-   `.AppleCD` itself does at all five of its entries*. We are not inventing a shape;
-   we are imitating the driver's own.
+1. `SetZone(SystemZone())` so the resource loads into the **system heap**
+2. `Get1Resource` the engine's own code resource, `DetachResource`, `HLockHi`
+3. call its entry once so its `RETRO68_RELOCATE()` fixes up globals at the loaded
+   address
+4. it never moves again, so the handler address stays valid after the INIT's own code
+   is discarded
 
-- **For:** builds today with the toolchain in hand; no 68K anywhere; the background
-  app is a *better* pump than `accRun` (it can allocate, log, and use the File
-  Manager, none of which `accRun`-time code should assume); proven vehicle on this
-  project; and the engine code is reusable under Option A anyway.
-- **Against:** the deliverable is an app in Startup Items rather than a single
-  extension, which is a visible change from FEASIBILITY §2's goal. Also the patch
-  must be **unpatched on quit** — if the app quits while `dCtlDriver` points into its
-  fragment, the next CD Control call jumps into freed code. Making the engine a
-  resident driver (step 1) is what contains that risk, and a quit handler that
-  restores `dCtlDriver` closes it.
-
-### Why this is the user's call
-
-Both produce working software and the engine work transfers either way, so nothing
-is wasted by choosing B now and revisiting. But Option A costs hours of toolchain
-build plus a snapshot, and Option B changes the shape of what ships. That is a
-product-and-time tradeoff, not a technical one, so it is not mine to make silently.
-
-### What does not change either way
-
-Everything in §1, §4 (patch mechanics), §5 (which csCodes we take) and §6 (staging
-and safety) stands, with two refinements from the dump:
-
-- Chaining is a **call**, not a tail jump: the original returns, so `csParam` can be
-  rewritten afterwards. The tail-jump fallback is no longer needed.
-- We reuse the original's descriptor **by address** and never have to construct a
-  procInfo to chain. Only our own entry descriptor needs building, and its shape is
-  copied from the driver's.
+This is the piece 2a has to get right, and it is a supported path rather than a
+hand-rolled one.

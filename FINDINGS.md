@@ -437,20 +437,29 @@ is** a classic DRVR — the header cross-checked five ways and `drvrCtl` = 0x154
 where the Control entry lives. What is *not* 68K is the code behind it. "Patch the
 DRVR Control entry" remains correct; "the entry is 68K code" was wrong.
 
-## ⚠ What this breaks — the toolchain
+## ⚠ What this refines — and one error of mine, corrected
 
-PHASE2.md §2 chose an **all-68K** engine, on the reasoning that the entry we patch is
-68K code so the patch must be 68K anyway. **That premise is now false**, and worse:
+PHASE2.md §2 chose an **all-68K** engine on the reasoning that the entry we patch is
+68K code so the patch must be 68K anyway. **That premise is false** — the entry is a
+PPC routine descriptor. The conclusion survives for better reasons (trivial residency
+for a 68K blob, and no descriptor construction needed to chain), but the reasoning is
+corrected in PHASE2.md §2.
 
-**This Retro68 installation is PowerPC-only.** There is no `m68k-apple-macos`
-toolchain directory, no m68k gcc in `toolchain/bin`, and no 68K CMake toolchain file
-— only `powerpc-apple-macos`. Retro68's own `Samples/SystemExtension` says
-"PowerPC is not currently supported here" for code resources, and a classic INIT
-*is* a 68K code resource.
+I then compounded it. Having found the entry was PowerPC, I checked whether a 68K
+build was possible, looked only in `~/Retro68-build/toolchain/` and its `bin/`, found
+only `powerpc-apple-macos`, and concluded **the installation was PowerPC-only and no
+INIT of any kind could be built** — escalating a multi-hour toolchain build to the
+user as an open decision.
 
-**⇒ With the toolchain as installed, no INIT of any kind can be built.** That is not
-a Phase 2 detail; it decides the shape of the shipped artifact, and it is recorded as
-an open decision rather than settled unilaterally. See PHASE2.md §7.
+**That was wrong. The m68k toolchain was already installed**, at
+`~/Retro68-build/toolchain-m68k/`, complete with `m68k-apple-macos-gcc` 12.2.0, its
+own CMake toolchain file, and a `build-68k.log` ending "Done building Retro68." It was
+listed in a directory listing I had already printed and did not read carefully.
+
+Verified by building Retro68's own `Samples/SystemExtension` end to end: a real
+`'INIT' (128, locked)` resource, 53 KB MacBinary. **FEASIBILITY §2's intended artifact
+is buildable today at no toolchain cost**, and PHASE2.md §7 is resolved rather than
+open. Pipeline and residency details are recorded there.
 
 ## Probe bugs found and fixed
 
