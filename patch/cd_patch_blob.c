@@ -326,6 +326,12 @@ short _start(void)
     if (orig->drvrCtl < 0x12 || (unsigned short)orig->drvrCtl > 0x4000)
         return kInstallNotDRVRShape;
 
+    /* Already ours? Re-patching would lose the original pointer. */
+    {
+        CDPatchInfo *maybe = (CDPatchInfo *)(origBase + kInfoOffset);
+        if (maybe->magic == kPatchMagic) return kInstallAlreadyPatched;
+    }
+
     /* ★ Require the ATAPI driver we actually characterised, and refuse anything else.
      *
      * The first successful boot install taught this the hard way. During the extension
@@ -343,12 +349,6 @@ short _start(void)
         unsigned char *ctl = origBase + (unsigned short)orig->drvrCtl;
         unsigned short op  = (unsigned short)((ctl[0] << 8) | ctl[1]);
         if (op != 0xAAFE) return kInstallNotATAPIDriver;
-    }
-
-    /* Already ours? Re-patching would lose the original pointer. */
-    {
-        CDPatchInfo *maybe = (CDPatchInfo *)(origBase + kInfoOffset);
-        if (maybe->magic == kPatchMagic) return kInstallAlreadyPatched;
     }
 
     shell = (CDPatchShell *)NewPtrSysClear((Size)sizeof(CDPatchShell));
@@ -371,23 +371,29 @@ short _start(void)
     shell->drvrStatus = kStubStatus;
     shell->drvrClose  = kStubClose;
 
-    /* ★ KEEP THE ORIGINAL NAME, byte for byte.
-     * v1 gave the shell its own name, ".CDAudio". On hardware that showed up in the
-     * unit table in place of ".AppleCD", and iTunes then could not recognise an audio
-     * CD that it had read fine before. Anything that finds this driver by name —
-     * OpenDriver, Audio CD Access, the mounting machinery — must keep finding it.
-     * We are impersonating the driver, so we have to look exactly like it. Renaming
-     * it was gratuitous. */
+    /* ★ COPY THE HEADER TAIL VERBATIM — name, padding and version.
+     * v1 gave the shell its own name, ".CDAudio". On hardware that replaced
+     * ".AppleCD" in the unit table and iTunes stopped recognising an audio CD it had
+     * read fine before, so anything resolving this driver by name (OpenDriver, Audio
+     * CD Access, the mounting machinery) has to keep finding it.
+     *
+     * Copying only the Pascal name was still not faithful enough. Bytes 0x12..0x1F of
+     * the real header are name, padding AND the driver version (0x0148, which matches
+     * DriverGestalt 'vers' = 0x01488000). Our name[14] spans exactly that range, so
+     * copy all 14 bytes and the shell becomes byte-identical to the original across
+     * the whole tail. We are impersonating the driver; the less of it we invent, the
+     * fewer ways this can go wrong. */
     {
-        short nameLen = orig->drvrName[0];
         short k;
-        if (nameLen < 1 || nameLen > (short)(sizeof(shell->name) - 1)) {
+        if (orig->drvrName[0] < 1 ||
+            orig->drvrName[0] > (short)(sizeof(shell->name) - 1)) {
             DisposePtr((Ptr)gRing);
             DisposePtr((Ptr)shell);
             gRing = NULL;
             return kInstallNotDRVRShape;
         }
-        for (k = 0; k <= nameLen; k++) shell->name[k] = orig->drvrName[k];
+        for (k = 0; k < (short)sizeof(shell->name); k++)
+            shell->name[k] = orig->drvrName[k];
     }
 
     /* Four stubs tail-jump to the original's own entries; only Control is ours. */

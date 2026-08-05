@@ -52,6 +52,10 @@
 #include "cd_patch_shell.h"
 #include "cd_blob_load.h"
 
+#define kOptionKeyCode 0x3A
+#define KeyIsDown(km, code) \
+    ((((unsigned char *)(km))[(code) >> 3] & (1 << ((code) & 7))) != 0)
+
 #define LM_DrvQHdr          ((QHdrPtr)0x0308)
 #define LM_UTableBase       (*(Ptr *)0x011C)
 #define LM_UnitEntryCount   (*(short *)0x01D2)
@@ -200,6 +204,177 @@ static void Diagnose(void)
     }
 }
 
+/* ---- hex helper ----------------------------------------------------------- */
+
+static void AppendHexByte(char *dst, unsigned char v)
+{
+    static const char *hx = "0123456789ABCDEF";
+    short i = 0;
+    while (dst[i] != 0) i++;
+    dst[i++] = hx[(v >> 4) & 0x0F];
+    dst[i++] = hx[v & 0x0F];
+    dst[i]   = 0;
+}
+
+static void AppendHexLong(char *dst, unsigned long v)
+{
+    short i;
+    AppendStr(dst, "0x");
+    for (i = 3; i >= 0; i--) AppendHexByte(dst, (unsigned char)(v >> (i * 8)));
+}
+
+static void LogHexRun(const char *tag, const unsigned char *p, short n)
+{
+    char  line[256];
+    short i;
+    line[0] = 0;
+    AppendStr(line, "  ");
+    AppendStr(line, tag);
+    AppendStr(line, ": ");
+    for (i = 0; i < n; i++) { AppendHexByte(line, p[i]); AppendStr(line, " "); }
+    LogStr(line);
+}
+
+/* ---- find the CD driver by the same passive name scan the blob uses -------- */
+
+static Boolean NameIsAppleCD(const unsigned char *p)
+{
+    static const char *want = ".APPLECD";
+    short i;
+    if (p[0] != 8) return false;
+    for (i = 0; i < 8; i++) {
+        unsigned char c = p[1 + i];
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        if (c != (unsigned char)want[i]) return false;
+    }
+    return true;
+}
+
+static short FindCDRefNum(void)
+{
+    Ptr   utable = LM_UTableBase;
+    short count  = LM_UnitEntryCount;
+    short i;
+
+    if (utable == NULL || count <= 0 || count > 256) return 0;
+    for (i = 0; i < count; i++) {
+        unsigned char name[36];
+        if (((DCtlHandle *)utable)[i] == NULL) continue;
+        if (!GetUnitDriverName((short)~i, name, sizeof(name))) continue;
+        if (NameIsAppleCD(name)) return (short)~i;
+    }
+    return 0;
+}
+
+/* ---- DRY RUN: everything the blob would look at, without touching anything -- *
+ * This exists because CDPatchInstall crashed into MacsBug the first time it tried to
+ * patch the REAL ATAPI driver, and there was no log to say how far it got. Every
+ * earlier "successful" install was against a different, earlier incarnation of the
+ * driver seen during the extension parade, so the shape we are about to modify has
+ * never actually been recorded at the moment of modification. This records it, and
+ * cannot crash the machine doing so. */
+static void InspectDriver(void)
+{
+    short           refNum;
+    DCtlHandle      dceH;
+    DCtlPtr         dce;
+    unsigned char  *base;
+    DRVRHeaderPtr   hdr;
+    char            line[256];
+    short           offs[5];
+    const char     *names[5];
+    short           i;
+
+    LogStr("--- DRY RUN: the driver we would patch ---");
+
+    refNum = FindCDRefNum();
+    if (refNum == 0) {
+        LogStr("  no unit named '.AppleCD' found; nothing to inspect");
+        return;
+    }
+
+    line[0] = 0; AppendStr(line, "  refNum "); AppendNum(line, refNum);
+    LogStr(line);
+
+    dceH = GetDCtlEntry(refNum);
+    if (dceH == NULL || *dceH == NULL) { LogStr("  no DCE"); return; }
+    dce = *dceH;
+
+    line[0] = 0;
+    AppendStr(line, "  dCtlFlags "); AppendHexLong(line, (unsigned long)(unsigned short)dce->dCtlFlags);
+    AppendStr(line, "  dRAMBased ");
+    AppendStr(line, (dce->dCtlFlags & dRAMBasedMask) ? "SET (Handle!)" : "clear (Ptr)");
+    AppendStr(line, "  dCtlDelay "); AppendNum(line, dce->dCtlDelay);
+    LogStr(line);
+
+    line[0] = 0;
+    AppendStr(line, "  dCtlDriver "); AppendHexLong(line, (unsigned long)dce->dCtlDriver);
+    AppendStr(line, "  dCtlStorage "); AppendHexLong(line, (unsigned long)dce->dCtlStorage);
+    LogStr(line);
+
+    if (dce->dCtlFlags & dRAMBasedMask) {
+        Handle hh = (Handle)dce->dCtlDriver;
+        base = (hh && *hh) ? (unsigned char *)(*hh) : NULL;
+    } else {
+        base = (unsigned char *)dce->dCtlDriver;
+    }
+    if (base == NULL || ((unsigned long)base & 1) || (unsigned long)base < 0x1000) {
+        LogStr("  driver pointer implausible; stopping");
+        return;
+    }
+
+    hdr = (DRVRHeaderPtr)base;
+    LogHexRun("header 0x00", base, 16);
+    LogHexRun("header 0x10", base + 16, 16);
+
+    offs[0] = hdr->drvrOpen;  names[0] = "open  ";
+    offs[1] = hdr->drvrPrime; names[1] = "prime ";
+    offs[2] = hdr->drvrCtl;   names[2] = "ctl   ";
+    offs[3] = hdr->drvrStatus;names[3] = "status";
+    offs[4] = hdr->drvrClose; names[4] = "close ";
+
+    for (i = 0; i < 5; i++) {
+        unsigned char *e = base + (unsigned short)offs[i];
+        unsigned short op;
+
+        line[0] = 0;
+        AppendStr(line, "  entry ");
+        AppendStr(line, names[i]);
+        AppendStr(line, " offset ");
+        AppendHexLong(line, (unsigned long)(unsigned short)offs[i]);
+        AppendStr(line, " -> ");
+        AppendHexLong(line, (unsigned long)e);
+        LogStr(line);
+
+        if ((unsigned long)e < 0x1000 || ((unsigned long)e & 1)) {
+            LogStr("    (implausible; not reading it)");
+            continue;
+        }
+        LogHexRun("    bytes", e, 16);
+        op = (unsigned short)((e[0] << 8) | e[1]);
+        line[0] = 0;
+        AppendStr(line, "    first word ");
+        AppendHexLong(line, (unsigned long)op);
+        AppendStr(line, op == 0xAAFE ? "  = 0xAAFE, Mixed Mode descriptor"
+                                     : "  = NOT a Mixed Mode descriptor");
+        LogStr(line);
+        if (op == 0xAAFE) {
+            line[0] = 0;
+            AppendStr(line, "    ISA ");
+            AppendHexLong(line, (unsigned long)e[13]);
+            AppendStr(line, " (0=68K 1=PPC)  TVector ");
+            AppendHexLong(line, ((unsigned long)e[16] << 24) |
+                                ((unsigned long)e[17] << 16) |
+                                ((unsigned long)e[18] << 8)  | e[19]);
+            LogStr(line);
+        }
+    }
+
+    LogHexRun("header tail 0x12", base + 0x12, 14);
+    LogStr("  (that tail is name + padding + version; the shell copies it verbatim)");
+    LogStr("--- END DRY RUN: nothing was modified ---");
+}
+
 /* ---- the install ---------------------------------------------------------- */
 
 static const char *ResultText(short r)
@@ -231,8 +406,10 @@ static void ShowResult(const char *what)
 
 int main(void)
 {
-    short  result;
-    char   line[256];
+    short   result;
+    char    line[256];
+    KeyMap  km;
+    Boolean commit;
 
     InitGraf(&qd.thePort);
     InitFonts();
@@ -242,11 +419,30 @@ int main(void)
     InitDialogs(NULL);
     InitCursor();
 
+    GetKeys(km);
+    commit = KeyIsDown(km, kOptionKeyCode);
+
     LogOpen();
     LogStr("");
-    LogStr("=== CDPatchInstall: installing from an application (post-boot) ===");
+    if (commit)
+        LogStr("=== CDPatchInstall: OPTION HELD, will COMMIT the patch ===");
+    else
+        LogStr("=== CDPatchInstall: DRY RUN (hold option to actually patch) ===");
 
     Diagnose();
+    InspectDriver();
+
+    /* ★ The default is now a dry run. The first attempt to patch the real ATAPI driver
+     * crashed into MacsBug with no log, so the safe action became the default one and
+     * patching became the deliberate one. */
+    if (!commit) {
+        LogStr("dry run complete; nothing was modified");
+        if (gLogRef != 0) { FSClose(gLogRef); gLogRef = 0; }
+        ShowResult("DRY RUN complete - nothing was changed. Details are in "
+                   "'CD Patch Log' in the System Folder. Hold OPTION when launching "
+                   "to actually install the patch.");
+        return 0;
+    }
 
     /* Copy the blob into a system-heap block and run the copy. The earlier version
      * relied on SetZone(SystemZone()) + Get1Resource + DetachResource + HLockHi, and
