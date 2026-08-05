@@ -23,9 +23,10 @@ resource 'INIT' (128, locked) {
     dontBreakAtEntry, $$read("cd_patch_init.flt");
 };
 
-/* Locked and preloaded is deliberate: the INIT loads this into the system heap and
- * detaches it, and it must not move while the Control patch points into it. */
-resource 'CDpt' (128, nonpurgeable, locked, preload) {
+/* NOT preload: a preloaded resource is read when the FILE is opened, into whatever
+ * heap is current then — for an app, its own heap at launch. That crashed the machine.
+ * The loader copies this into a NewPtrSys block instead; see cd_blob_load.h. */
+resource 'CDpt' (128, nonpurgeable, locked) {
     dontBreakAtEntry, $$read("cd_patch_blob.flt");
 };
 

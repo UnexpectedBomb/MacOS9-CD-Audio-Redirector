@@ -39,8 +39,18 @@ first, where boot timing is irrelevant.
 2. Touch the drive: insert an audio CD, play a track in iTunes, or run `CDRecon_v2`.
 3. Run **`CDTraceDump_v1`** and send back `CD Trace Log` + `CD Patch Log`.
 
-The patch stays resident after `CDPatchInstall` quits, because the blob is detached
-and locked in the **system** heap — it belongs to the system, not to the app.
+The patch stays resident after `CDPatchInstall` quits because the blob is **copied into
+a `NewPtrSys` block** and the copy is what runs — the resident code is in memory
+allocated in the system heap explicitly.
+
+> **⚠ The first attempt at this crashed into MacsBug.** The `'CDpt'` resource was marked
+> `preload`, so it was read into the *application's* heap at launch, before
+> `SetZone(SystemZone())` could matter. `DetachResource` and `HLockHi` faithfully kept it
+> there, the patch pointed at app-heap code, and the moment the app quit that memory was
+> freed with `dCtlDriver` still pointing into it — so the next Control call jumped into
+> freed memory. `preload` is gone and the loader no longer depends on which heap happens
+> to be current. If you are recovering from that crash: just restart. The patch was never
+> persistent, and a fresh boot rebuilds `dCtlDriver` from scratch.
 
 ### 2. Then fix the boot path
 

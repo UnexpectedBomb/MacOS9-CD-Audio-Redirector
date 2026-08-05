@@ -15,10 +15,13 @@
  * 'CDpt' code resource the INIT uses, loaded the same way into the system heap, so
  * what gets tested is what will ship.
  *
- * Residency without an INIT works because the blob is detached and locked in the
- * SYSTEM heap: it belongs to the system, not to this application, and it survives
- * this app quitting. (Same reasoning as `reference_os9_init_resident_driver`'s note
- * that a held CFM connection does not survive but a system-owned installation does.)
+ * ★ Residency without an INIT works because the blob is COPIED INTO A NewPtrSys BLOCK
+ * and the copy is what runs, so the resident code is in memory we allocated in the
+ * system heap ourselves and it survives this app quitting. The first version relied on
+ * SetZone(SystemZone()) + Get1Resource + DetachResource + HLockHi and crashed the
+ * machine into MacsBug: 'CDpt' was marked `preload`, so it had already been read into
+ * this application's heap at launch, and the patch ended up pointing at app-heap code
+ * that was freed the moment the app quit. See cd_blob_load.h.
  *
  * It also DIAGNOSES the boot-time failure, which the INIT could not do cheaply: it
  * dumps the whole unit table by name and the drive queue, so we learn whether
@@ -47,9 +50,7 @@
 #include <ToolUtils.h>
 
 #include "cd_patch_shell.h"
-
-#define kBlobType   FOUR_CHAR_CODE('CDpt')
-#define kBlobID     128
+#include "cd_blob_load.h"
 
 #define LM_DrvQHdr          ((QHdrPtr)0x0308)
 #define LM_UTableBase       (*(Ptr *)0x011C)
@@ -229,8 +230,6 @@ static void ShowResult(const char *what)
 
 int main(void)
 {
-    Handle blob;
-    THz    saveZone;
     short  result;
     char   line[256];
 
@@ -248,31 +247,45 @@ int main(void)
 
     Diagnose();
 
-    saveZone = GetZone();
-    SetZone(SystemZone());
-    blob = Get1Resource(kBlobType, kBlobID);
-    if (blob == NULL || *blob == NULL) {
-        SetZone(saveZone);
-        LogStr("patch blob resource 'CDpt' 128 missing from this app");
-        ShowResult("The patch blob is missing from this application.");
-        return 0;
-    }
-    DetachResource(blob);
-    HLockHi(blob);
-    SetZone(saveZone);
+    /* Copy the blob into a system-heap block and run the copy. The earlier version
+     * relied on SetZone(SystemZone()) + Get1Resource + DetachResource + HLockHi, and
+     * that crashed the machine: 'CDpt' was marked `preload`, so it had already been
+     * read into this application's own heap at launch, and the installed patch ended
+     * up pointing at app-heap code that vanished when the app quit. See
+     * cd_blob_load.h. */
+    {
+        Ptr   code = NULL;
+        long  size = 0;
+        short lerr = CDLoadBlobToSysHeap(&code, &size);
 
-    /* Entry at offset 0, returns a status word, relocates itself on this one call. */
-    result = (*(short (*)(void))(*blob))();
+        if (lerr != kBlobLoadOK) {
+            line[0] = 0;
+            AppendStr(line, "could not load 'CDpt' 128 into the system heap, err ");
+            AppendNum(line, lerr);
+            LogStr(line);
+            ShowResult("Could not load the patch blob into the system heap.");
+            return 0;
+        }
+
+        line[0] = 0;
+        AppendStr(line, "blob copied to system heap at 0x");
+        AppendNum(line, (long)code);
+        AppendStr(line, ", size ");
+        AppendNum(line, size);
+        LogStr(line);
+
+        result = CDCallBlob(code);
+
+        if (result != kInstallOK) {
+            /* Nothing was patched, so nothing points into the copy. */
+            DisposePtr(code);
+        }
+    }
 
     line[0] = 0;
     AppendStr(line, "install result: ");
     AppendStr(line, ResultText(result));
     LogStr(line);
-
-    if (result != kInstallOK) {
-        HUnlock(blob);
-        DisposeHandle(blob);
-    }
 
     {
         char msg[256];

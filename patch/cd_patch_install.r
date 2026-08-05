@@ -11,7 +11,7 @@ type 'CDpt' {
     RETRO68_CODE_TYPE
 };
 
-resource 'CDpt' (128, nonpurgeable, locked, preload) {
+resource 'CDpt' (128, nonpurgeable, locked) {
     dontBreakAtEntry, $$read("cd_patch_blob.flt");
 };
 

@@ -6,12 +6,13 @@
  * to survive. INIT code is discarded when the INIT returns, so nothing that must
  * persist can live here.
  *
- * The residency recipe is the supported Retro68 one, not hand-rolled:
- *   SetZone(SystemZone())  so the resource loads into the system heap
- *   Get1Resource           from the INIT's own file (CurResFile at INIT time)
- *   DetachResource         so releasing the file cannot reclaim it
- *   HLockHi                so it never moves again
- *   call its entry once    so its RETRO68_RELOCATE() fixes up globals in place
+ * Residency: copy the 'CDpt' blob into a NewPtrSys block and call the copy, so the
+ * code lives in memory we allocated in the system heap ourselves. The earlier
+ * SetZone(SystemZone()) + Get1Resource + DetachResource + HLockHi recipe is not good
+ * enough — it depends on which heap is current when the Resource Manager happens to
+ * read the resource, and with `preload` set that had already happened. From the
+ * installer app that put the resident code in the APP heap and crashed the machine as
+ * soon as the app quit. See cd_blob_load.h.
  *
  * ★ Escape hatch: hold SHIFT at boot and nothing is installed. This is the standard
  * INIT convention and it is the only recovery path if a patched boot goes bad, so it
@@ -40,9 +41,7 @@
 #include "Retro68Runtime.h"
 
 #include "cd_patch_shell.h"
-
-#define kBlobType   FOUR_CHAR_CODE('CDpt')
-#define kBlobID     128
+#include "cd_blob_load.h"
 
 #define kShiftKeyCode 0x38
 #define KeyIsDown(km, code) \
@@ -96,8 +95,6 @@ static const char *ResultText(short r)
 void _start(void)
 {
     KeyMap  km;
-    Handle  blob;
-    THz     saveZone;
     short   result;
 
     RETRO68_RELOCATE();
@@ -110,32 +107,24 @@ void _start(void)
         return;
     }
 
-    saveZone = GetZone();
-    SetZone(SystemZone());
+    {
+        Ptr   code = NULL;
+        short lerr = CDLoadBlobToSysHeap(&code, NULL);
 
-    blob = Get1Resource(kBlobType, kBlobID);
-    if (blob == NULL || *blob == NULL) {
-        SetZone(saveZone);
-        LogLine("CD Patch 2a: patch blob resource missing");
-        Retro68FreeGlobals();
-        return;
-    }
+        if (lerr != kBlobLoadOK) {
+            LogLine("CD Patch 2a: could not load the patch blob into the "
+                    "system heap");
+            Retro68FreeGlobals();
+            return;
+        }
 
-    DetachResource(blob);
-    HLockHi(blob);
-    SetZone(saveZone);
+        result = CDCallBlob(code);
+        LogLine(ResultText(result));
 
-    /* The blob's entry is at offset 0 and returns a status word. It relocates
-     * itself on this call, so it must be called exactly once. */
-    result = (*(short (*)(void))(*blob))();
-
-    LogLine(ResultText(result));
-
-    if (result != kInstallOK) {
-        /* Nothing was patched, so the blob is dead weight. It is in the system heap
-         * and detached, so let it go rather than leak it for the whole session. */
-        HUnlock(blob);
-        DisposeHandle(blob);
+        if (result != kInstallOK) {
+            /* Nothing was patched, so nothing points into the copy. */
+            DisposePtr(code);
+        }
     }
 
     Retro68FreeGlobals();
