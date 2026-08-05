@@ -77,7 +77,7 @@
 #include "cd_probe_common.h"
 #include "cd_cscodes.h"
 
-#define kVersionString  "CDRecon v1"
+#define kVersionString  "CDRecon v2"
 
 typedef enum {
     kDAENotRun = 0,
@@ -515,7 +515,7 @@ static void ShowSummary(void)
 int main(void)
 {
     KeyMap  km;
-    Boolean skipDAE;
+    Boolean skipDAE, safeMode, logOK;
 
     /* Explicit Toolbox init. This app deliberately does not use RetroConsole:
      * its Toolbox init is lazy (it fires on the first printf), and building
@@ -529,26 +529,41 @@ int main(void)
     InitCursor();
 
     GetKeys(km);
-    skipDAE = KeyIsDown(km, kOptionKeyCode);
+    skipDAE  = KeyIsDown(km, kOptionKeyCode);
+    safeMode = KeyIsDown(km, kShiftKeyCode);
 
     memset(&gR, 0, sizeof(gR));
 
-    CDLogOpen("\pCD Recon Log");
+    /* Progress window FIRST, before anything that talks to a driver. v1 opened
+     * no window until all the probing was done, so its first hardware run looked
+     * identical to a dead app: blank menu bar, live cursor, nothing else. Now
+     * every driver call announces itself here before it is issued, so a hang is
+     * visible, attributable, and distinguishable from merely slow. */
+    CDProgressOpen("\p" kVersionString " - progress");
+    CDProgressSay("%s starting", kVersionString);
+    if (skipDAE)  CDProgressSay("option held: P4 (DAE probe) will be SKIPPED");
+    if (safeMode) CDProgressSay("shift held: SAFE MODE, no unit-table sweep");
+
+    logOK = CDLogOpen("\pCD Recon Log");
+    if (!logOK)
+        CDProgressSay("!! could not open 'CD Recon Log' - screen only");
     CDLogBanner(kVersionString " - CD Audio Redirector Phase 0 recon",
                 skipDAE ? "option held: P4 (DAE) will be SKIPPED"
                         : "option not held: P4 (DAE) will run");
 
     CDLogf("--- P2: locate and classify the optical driver ---");
-    CDFindDriver(&gR.cd);
+    CDFindDriver(&gR.cd, !safeMode);
 
     if (gR.cd.found) {
         ProbeStatusSurface();
         CDReadTOC(gR.cd.refNum, &gR.toc);
+        CDProgressSay("surveying mounted volumes (P3)");
         SurveyVolumes();
         if (skipDAE) {
             gR.dae = kDAESkipped;
             CDLogf("--- P4: SKIPPED (option key held) ---");
         } else {
+            CDProgressSay("P4: the DAE gate");
             ProbeDAE();
         }
     }
@@ -559,6 +574,8 @@ int main(void)
            gR.audioFilesFound, gR.audioStatusErr, (int)gR.dae);
     CDLogClose();
 
+    CDProgressSay("done - showing the summary");
+    CDProgressClose();
     ShowSummary();
     return 0;
 }

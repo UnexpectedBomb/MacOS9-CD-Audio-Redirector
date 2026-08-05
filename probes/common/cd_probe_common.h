@@ -1,17 +1,23 @@
 /*
  * cd_probe_common.h — shared plumbing for the CD Audio Redirector probes.
  *
- * Everything in here is deliberately boring: a flushed append-only log, thin
- * wrappers over PBControl/PBStatus that log both the call and its result, and the
- * driver discovery that every probe needs. The interesting per-probe logic lives
- * in the probe.
+ * Everything in here is deliberately boring: a flushed append-only log, an
+ * on-screen progress window, thin wrappers over PBControl/PBStatus that log both
+ * the call and its result, and the driver discovery every probe needs. The
+ * interesting per-probe logic lives in the probe.
  *
- * Design constraints worth remembering:
+ * DESIGN CONSTRAINTS, EACH ONE PAID FOR
+ * -------------------------------------
  *   - No stdio. printf-based Retro68 apps quit immediately on real OS 9.
  *   - Bounded vsnprintf only. An unbounded vsprintf into a fixed buffer is how
  *     the USB2 work smashed its stack and got a MacsBug PC full of ASCII.
- *   - The log is FLUSHED before each driver call, so if a call hangs the machine
- *     the last line on disc names the call that did it. There is no debugger.
+ *   - EVERY log line is flushed. v1 only flushed inside CDLogStep, so a
+ *     force-quit could lose exactly the lines that named the problem.
+ *   - EVERY driver call is announced on screen before it is issued. v1 hung on
+ *     the first run with no visible progress and no surviving breadcrumb, which
+ *     is the failure mode the log was supposed to make impossible. A sync PB call
+ *     to a driver that never completes it spins forever, so "which call" is the
+ *     only question that matters, and it must be answerable without a debugger.
  */
 
 #ifndef CD_PROBE_COMMON_H
@@ -30,8 +36,9 @@
 #define LM_UnitEntryCount    (*(short *)0x01D2)   /* unit table entry count    */
 #define LM_DrvQHdr           ((QHdrPtr)0x0308)    /* drive queue header        */
 
-/* Option key, for "skip the invasive part" escape hatches. */
+/* Modifier keys, for the escape hatches. */
 #define kOptionKeyCode 0x3A
+#define kShiftKeyCode  0x38
 #define KeyIsDown(km, code) \
     ((((unsigned char *)(km))[(code) >> 3] & (1 << ((code) & 7))) != 0)
 
@@ -46,19 +53,33 @@ typedef struct {
     OSType   deviceType;    /* DriverGestalt 'devt' — 'cdrm' for a CD          */
     OSType   interfaceType; /* DriverGestalt 'intf' — 'ata ', 'scsi', 'usb '   */
     UInt32   deviceRef;     /* DriverGestalt 'dvrf' — the route-B ATA handle   */
+    Boolean  viaDriveQueue; /* found by the safe path rather than the sweep    */
 } CDDriverInfo;
+
+/* ---- progress window ----------------------------------------------------- *
+ * Opened before any driver call so that "hung" and "slow" are distinguishable
+ * from across the room, and so the last line on screen names the call in flight
+ * even if the log never reaches disc. */
+
+void CDProgressOpen(ConstStr255Param title);
+void CDProgressSay(const char *fmt, ...);
+void CDProgressClose(void);
 
 /* ---- logging -------------------------------------------------------------- */
 
-/* Open (create if needed) an append-mode text log of the given name in the
- * System Folder. Safe to call when it fails: every log call then no-ops. */
-void CDLogOpen(ConstStr255Param fileName);
-void CDLogClose(void);
-void CDLogFlush(void);
+/* Open (create if needed) an append-mode text log of the given name in the System
+ * Folder. Returns false if it could not be opened — worth surfacing, because a
+ * silent logging failure on a volume whose System Folder is not writable turns
+ * every later probe into a run with no evidence. */
+Boolean CDLogOpen(ConstStr255Param fileName);
+void    CDLogClose(void);
+void    CDLogFlush(void);
 
+/* Writes one line and flushes it. */
 void CDLogf(const char *fmt, ...);
 
-/* Log a line and flush immediately. Use right before any driver call. */
+/* Writes one line, flushes it, AND puts it on screen. Use immediately before
+ * every driver call. */
 void CDLogStep(const char *fmt, ...);
 
 void CDLogHex(const char *tag, const void *p, long n);
@@ -70,8 +91,9 @@ void CDPToC(ConstStr255Param src, char *dst, int dstSize);
 void CDLogBanner(const char *probeName, const char *note);
 
 /* ---- Device Manager wrappers ---------------------------------------------- *
- * Each logs the call before issuing it and the csParam bytes after. paramOut may
- * be NULL. Both copy at most 22 bytes (the size of CntrlParam.csParam). */
+ * Each announces the call before issuing it and logs the csParam bytes after.
+ * paramOut may be NULL. Both copy at most 22 bytes (the size of
+ * CntrlParam.csParam). */
 
 OSErr CDStatusCall(short refNum, short csCode, void *paramOut, long paramOutLen);
 
@@ -83,16 +105,17 @@ OSErr CDDriverGestalt(short refNum, OSType selector, UInt32 *response);
 
 /* ---- discovery ------------------------------------------------------------ */
 
-/* Walk the unit table, ask each populated entry what it is via DriverGestalt
- * 'devt', and return the one that says 'cdrm'.
+/* Find the optical driver and classify it.
  *
- * Deliberately NOT a name match on ".AppleCD": the ATAPI-era driver's name
- * varies across builds, and a name match is exactly the assumption that breaks
- * silently. Deliberately the unit table rather than the drive queue, because the
- * drive queue only lists drives and this has to work with the tray empty.
+ * Two-stage on purpose. Stage 1 asks only the drivers listed in the DRIVE QUEUE,
+ * which are by definition block drivers and are well behaved. Stage 2, the full
+ * unit-table sweep, only runs if stage 1 found no CD and allowFullSweep is true —
+ * because a sync Status call to an arbitrary driver that defers and never
+ * completes the call hangs the machine, and the unit table is full of drivers
+ * that have nothing to do with discs. v1 swept unconditionally and hung.
  *
- * Logs the whole sweep. Fills in *info; info->found says whether it worked. */
-void CDFindDriver(CDDriverInfo *info);
+ * Pass allowFullSweep = false (shift held) for the safe path only. */
+void CDFindDriver(CDDriverInfo *info, Boolean allowFullSweep);
 
 /* Dump the DCE and classify classic DRVR vs native ndrv (the P2 question).
  * Sets info->isNative and info->name. */

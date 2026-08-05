@@ -17,12 +17,63 @@ Read `REVIEW.md` for why Phase 0 has this shape rather than the one in
 | P4 | **the DAE gate** | `CDRecon_v1` | mini | block size, restored |
 | P5a | legacy audio API | `CDPlayProbe_v1` | **MDD first**, then mini | playback + CD volume, restored |
 
-P2–P4 are one run of one app. Put a **mixed-mode game disc** (Warcraft: Orcs &
-Humans is the reference title) in the drive first — P3 and P4 need real audio
-tracks to say anything.
+P2–P4 are one run of one app.
 
-Artifacts are staged on the Pi share as `CDRecon_v1.bin` / `.img` and
-`CDPlayProbe_v1.bin` / `.img` in `/home/csell/shared/`.
+**What disc to use.** P4 and P5a only need Red Book audio tracks, so an ordinary
+**pressed music CD** runs both. Prefer a pressed disc over a CD-R for P4
+specifically: if the gate failed on a burn, media would be a live confound and the
+run would have to be repeated on a pressed disc anyway, and the gate is the one
+result that must not come back ambiguous.
+
+Only **P3** needs a real mixed-mode disc (data track 1 + audio tracks) — and a
+music CD still answers half of it: if the tracks appear as AIFF-ish files, Audio CD
+Access is present and working on this system, leaving only "does it do the same for
+the audio session of a mixed-mode disc?". That first half is the part that would
+simplify the design, so it is worth having early.
+
+A mixed-mode game disc (Warcraft: Orcs & Humans is the reference title) is needed
+for the full P3 answer and for Phase-2 validation against a real game. Note that
+**"hybrid" is not "mixed mode"**: most Mac game discs of the era are hybrid
+(Mac + PC *data*), which is unrelated. Enhanced CD / CD-Extra music albums are
+audio + data but *multisession*, a different layout again — an interesting extra
+data point, not a substitute.
+
+Artifacts are staged on the Pi share as `CDRecon_v2.bin` / `.img` and
+`CDPlayProbe_v2.bin` / `.img` in `/home/csell/shared/`. **Use v2 and trash v1** —
+v1 hung on its first hardware run (see below).
+
+**Modifier keys at launch:**
+
+- **shift** — safe mode: skip the full unit-table sweep entirely. Only the drive
+  queue's own drivers get asked anything.
+- **option** (CDRecon only) — skip P4, keeping the run 100% read-only.
+
+### What v1 got wrong, and what v2 does about it
+
+v1 hung on both apps' first run: blank menu bar, live cursor, no window. Both logs
+end at the same line, the unit-table sweep header. The sweep sent a DriverGestalt
+Status call to every populated entry in a 96-entry unit table, and one of those
+drivers accepted the call and never completed it. `PBStatusSync` spins on
+`ioResult`, so that is a permanent hang — waiting longer would not have helped.
+Poking arbitrary non-disk drivers to find the CD was careless.
+
+Worse, the sweep had no surviving breadcrumb: `CDDriverGestalt` bypassed the
+logging wrappers, and `CDLogf` only flushed inside `CDLogStep`, so the per-entry
+lines that would have named the guilty driver never reached disc.
+
+v2:
+
+1. **Drive-queue-first discovery.** Stage 1 asks only the drivers listed in the
+   drive queue, which are block drivers by definition and well behaved. The CD
+   driver is in there whenever it is loaded, disc or no disc, so stage 1 is
+   normally the whole job and the sweep never runs at all.
+2. **The sweep is a fallback**, only if stage 1 finds no CD, and skippable with
+   shift.
+3. **Every driver call announces itself** in a flushed log line *and* on screen, in
+   a progress window opened before the first driver call. A hang is now visible,
+   attributable, and distinguishable from merely slow.
+4. **Pointer sanity check** before dereferencing `dCtlDriver` for a hex dump, so a
+   bogus DCE gives a log line instead of a bus error.
 
 ---
 

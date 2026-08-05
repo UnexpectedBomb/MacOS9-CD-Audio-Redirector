@@ -73,7 +73,7 @@
 #include "cd_probe_common.h"
 #include "cd_cscodes.h"
 
-#define kVersionString  "CDPlayProbe v1"
+#define kVersionString  "CDPlayProbe v2"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -207,12 +207,12 @@ static void PollPosition(void)
     }
 }
 
-static void RunProbe(void)
+static void RunProbe(Boolean safeMode)
 {
     int t;
 
     CDLogf("--- P5a: locate and classify the optical driver ---");
-    CDFindDriver(&gP.cd);
+    CDFindDriver(&gP.cd, !safeMode);
     if (!gP.cd.found) {
         CDLogf("no CD driver found; nothing to probe");
         return;
@@ -318,6 +318,8 @@ static void RunProbe(void)
         }
         CDLogf("  ⇒ the driver ACCEPTED AudioPlay. Whether anything is audible is "
                "now the H1 test — see the user's answer at the end of this run.");
+        CDProgressSay("PLAYING track %d - LISTEN NOW for ~12 seconds",
+                      gP.toc.track[gP.audioTrackIdx].number);
     }
 
     /* --- watch it --- */
@@ -488,7 +490,9 @@ static short AskDidYouHearIt(void)
 
 int main(void)
 {
-    short answer;
+    short   answer;
+    KeyMap  km;
+    Boolean safeMode, logOK;
 
     InitGraf(&qd.thePort);
     InitFonts();
@@ -498,19 +502,33 @@ int main(void)
     InitDialogs(NULL);
     InitCursor();
 
+    GetKeys(km);
+    safeMode = KeyIsDown(km, kShiftKeyCode);
+
     memset(&gP, 0, sizeof(gP));
     gP.audioTrackIdx = -1;
     gP.playPosType   = -1;
     gP.playForm      = "none";
 
-    CDLogOpen("\pCD Play Probe Log");
+    /* Progress window before any driver call, for the same reason as CDRecon:
+     * this probe spends ~12 seconds deliberately waiting on playback, and
+     * "waiting on purpose" has to look different from "hung". */
+    CDProgressOpen("\p" kVersionString " - progress");
+    CDProgressSay("%s starting", kVersionString);
+    if (safeMode) CDProgressSay("shift held: SAFE MODE, no unit-table sweep");
+
+    logOK = CDLogOpen("\pCD Play Probe Log");
+    if (!logOK)
+        CDProgressSay("!! could not open 'CD Play Probe Log' - screen only");
     CDLogBanner(kVersionString " - legacy CD-audio API probe (P5a)",
                 "ACTIVE probe: starts/stops playback and changes CD volume");
 
-    RunProbe();
+    RunProbe(safeMode);
     Cleanup();
     CDLogFlush();
 
+    CDProgressSay("done - answer the question in the next window");
+    CDProgressClose();
     answer = AskDidYouHearIt();
 
     CDLogf("--- listener verdict ---");
