@@ -1,25 +1,51 @@
 # Phase 2a — the Control-entry patch, trace only
 
-`CDPatch2a.bin` (extension) + `CDTraceDump_v1` (reader). **No audio.** 2a installs the
-patch, records every Control call, and hands every one to the original driver
-unchanged. The engine arrives in 2b.
+`CDPatch2a.bin` (extension) + `CDPatchInstall` (post-boot installer) +
+`CDTraceDump_v1` (reader). **No audio.** 2a installs the patch, records every Control
+call, and hands every one to the original driver unchanged. The engine arrives in 2b.
 
-## ⚠ Read this before the first boot
+## 🚑 RECOVERY: iTunes no longer recognises audio CDs
+
+Caused by an early build of this extension. Fix:
+
+1. **Drag the CDPatch2a extension OUT of the Extensions folder.**
+2. **Restart normally.**
+3. Eject and re-insert the disc.
+
+Do **not** use shift-at-boot for this — in OS 9 shift disables *all* extensions,
+including Audio CD Access, so it tells you nothing about whether iTunes is healthy.
+Removing just this one file is the clean test.
+
+Objective check instead of trusting iTunes: run `CDRecon_v2` and look at its P3
+section. A volume named `Audio CD 1` carrying `Track 1`…`Track n` means Audio CD Access
+is working again.
+
+**Why it broke** — two defects in the first build, either of which suffices:
+
+- The shell named itself `.CDAudio`, so anything resolving the driver by name (Audio CD
+  Access included) stopped finding it.
+- Worse, the INIT patched an *early* incarnation of the driver at `0x00FFE02E` during
+  the extension parade, so `dCtlDriver` never became the real ATAPI `.AppleCD` at
+  `0x0164xxxx`. Basic TOC reads still worked — which is why CDRecon looked fine — but
+  iTunes needs the full driver.
+
+Both are fixed: the shell copies the original name byte for byte, and the install now
+requires the Control entry to begin with `0xAAFE` (the real ATAPI driver's signature),
+so it declines during the parade and only succeeds post-boot.
+
+## ⚠ Read this before installing anything
 
 This is the project's first boot code. A bad extension means a machine that hangs at
 startup.
 
-1. **Install on the expendable OS9 LAB volume, not the primary** —
-   `feedback_os9_bootcode_testing_safety`.
-2. **Hold SHIFT at boot to skip installation.** Checked before anything else happens;
-   it is the recovery path.
-3. **Name the file so it loads late.** Extensions load in an undefined order, and if
-   `.AppleCD` has not loaded yet there is nothing to patch. Rename the file to begin
-   with a tilde — e.g. `~CD Audio Patch 2a` — because `~` is 0x7E and sorts after
-   every letter. If it still loses the race, the INIT logs `no CD driver yet` and does
-   nothing, which is a clean no-op rather than a broken boot.
-4. Every outcome is one line in **`CD Patch Log`** in the System Folder, flushed, so
+1. **LAB volume, not the primary** — `feedback_os9_bootcode_testing_safety`.
+2. **The INIT is now expected to DECLINE at boot** (`not the ATAPI driver yet`). That is
+   correct behaviour, not a failure: the real driver is not in place that early. Install
+   post-boot with `CDPatchInstall`.
+3. Every outcome is one line in **`CD Patch Log`** in the System Folder, flushed, so
    even a hang after that point leaves the reason on disc.
+4. **Before installing, confirm iTunes reads an audio CD.** After installing, confirm it
+   still does. That is the coexistence test the first build failed.
 
 ## What to do — start with the app, not the boot
 
