@@ -770,3 +770,67 @@ four-byte slip in code that had never been exercised; corrected too.
 `procInfo = 0x00179822`, `ISA = 0x01`, a non-zero original TVector with plausible code
 and TOC words, our own TVector likewise, a non-zero ring, and
 `⇒ STEP 3 IS SAFE TO ATTEMPT`.
+
+## Step 2 run 2 — validation passes, and the TVector sanity check earns its place
+
+```
+GetDriverMemoryFragment err=0 connID=0x000009BB main=0x018743DC desc=0x01874340
+SetDriverClosureMemory err=0
+status=0 (OK - descriptor validated)
+cdRefNum=-66  dCtlDriver=0x01622070  ctlDescriptor=0x016221C4
+descriptor: rdVersion=0x07 procInfo=0x00179822 ISA=0x01
+ORIGINAL TVector = 0x01758A58  -> code=0x01755950 toc=0x01760880
+OUR      TVector = 0x018743D0  -> code=0x3DB2355C toc=0x018743F0
+ring=0x018BB520 entries=512
+⇒ STEP 3 IS SAFE TO ATTEMPT
+```
+
+The descriptor now reads exactly as characterised: **`procInfo = 0x00179822`, `ISA = 0x01`**,
+`ctlDescriptor − dCtlDriver = 0x154`. The typed `RoutineDescriptorPtr` access fixed the
+off-by-four, and the original TVector's two words are plausible and self-consistent
+(code `0x01755950`, TOC `0x01760880`, both in the same region).
+
+### ⚠ But our own code was in the APPLICATION heap
+
+The engine said "safe to proceed" and it was wrong, because I had not thought to check
+*where our own code lives*. The instrumentation that reads both TVector words is what
+exposed it:
+
+```
+PEF resource at 0x3DB234E0
+OUR TVector   = 0x018743D0 -> code=0x3DB2355C  toc=0x018743F0
+```
+
+`0x3DB2355C` is `0x3DB234E0 + 0x7C` — **inside the PEF resource handle**, i.e. the
+application's heap. Only the data section (TVectors, TOC, at `0x0187xxxx` alongside
+`main` and `desc`) was copied into CFM-owned memory.
+
+That is normal behaviour: `GetDriverMemoryFragment` prepares a fragment from the memory
+you hand it and uses the PEF's **code section in place** — that is the point of preparing
+from memory rather than from disk. And `SetDriverClosureMemory(connID, true)` returning 0
+does not relocate a section CFM never copied; it holds the closure, not somebody else's
+buffer.
+
+**So Step 3 would have installed a Control handler whose code is freed the moment the
+installer quits** — the same fate as the 68K `preload` bug, reached by a different route.
+This is the third time this project has been bitten by letting another allocator decide
+which heap resident code lives in (`preload` → app heap; `GetDriverMemoryFragment`
+in-place code → app heap). The lesson generalises: **copy it into `NewPtrSys` yourself,
+then hand that over.**
+
+**Two fixes:**
+
+1. The installer now `NewPtrSys`-copies the PEF and prepares the fragment **from the
+   copy**, releasing the resource immediately so nothing ties the resident code to the
+   app.
+2. The engine now **refuses** with `kEngineCodeInAppHeap` if its own code address falls
+   inside the application zone (via the `ApplZone` low-memory global, since
+   `ApplicZone()` is absent from this toolchain's PowerPC import libs). A guard that
+   catches this class rather than relying on me remembering.
+
+### What run 3 should show
+
+`code=` for our TVector sitting near the system-heap PEF copy (in the `0x016`–`0x018`
+range like everything else CFM-owned), **not** near the PEF resource handle, and
+`⇒ STEP 3 IS SAFE TO ATTEMPT`. That is the last thing standing between here and the
+one-line patch.

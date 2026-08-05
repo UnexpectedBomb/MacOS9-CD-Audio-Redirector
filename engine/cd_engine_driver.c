@@ -31,6 +31,9 @@
 /* Low-memory globals by absolute address, as everywhere else in this project. */
 #define LM_UTableBase       (*(Ptr *)0x011C)
 #define LM_UnitEntryCount   (*(short *)0x01D2)
+/* ApplicZone() is not in the PowerPC import libs for this toolchain, so the
+ * application zone comes from its low-memory global like everything else here. */
+#define LM_ApplZone         (*(THz *)0x02AA)
 
 #define kNoQueueBit         0x0200
 
@@ -273,6 +276,20 @@ static OSErr EngineInit(CDEngineInfo *info)
     tv = (unsigned long *)info->ourTVector;
     info->ourCode = tv[0];
     info->ourTOC  = tv[1];
+
+    /* ★ Would our own code survive the installer quitting? CFM uses a PEF's code
+     * section in place, so if the installer handed us the resource handle rather than
+     * a system-heap copy, our code is in the application heap and would be freed on
+     * quit. Refuse rather than install something with a fuse in it. */
+    {
+        THz appZone = LM_ApplZone;
+        if (appZone != NULL &&
+            (Ptr)info->ourCode >= (Ptr)appZone &&
+            (Ptr)info->ourCode <  appZone->bkLim) {
+            info->status = kEngineCodeInAppHeap;
+            return noErr;
+        }
+    }
 
     /* Allocate the ring now, so Step 3 has nothing left to fail at. */
     gRing = (CDEngineTrace *)NewPtrSysClear(

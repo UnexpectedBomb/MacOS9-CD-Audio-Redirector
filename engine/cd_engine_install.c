@@ -74,6 +74,9 @@ static const char *StatusText(short s)
         case kEngineBadTVector:     return "saved TVector implausible";
         case kEngineNoMemory:       return "out of system memory";
         case kEngineAlreadyPatched: return "already patched";
+        case kEngineCodeInAppHeap:  return "our code is in the APP heap - it would "
+                                           "vanish on quit; the PEF was not copied "
+                                           "to the system heap first";
         default:                    return "unknown";
     }
 }
@@ -83,6 +86,7 @@ int main(void)
     Boolean            logOK;
     Handle             pefH;
     Size               pefLen;
+    Ptr                sysPef = NULL;
     CFragConnectionID  connID = 0;
     Ptr                fragMain = NULL;
     Ptr                driverDesc = NULL;
@@ -119,11 +123,40 @@ int main(void)
     LoadResource(pefH);
     HLock(pefH);
     pefLen = GetHandleSize(pefH);
-    CDLogf("  PEF at 0x%08lX, %ld bytes", (unsigned long)*pefH, (long)pefLen);
+    CDLogf("  PEF resource at 0x%08lX, %ld bytes", (unsigned long)*pefH,
+           (long)pefLen);
+
+    /* ★ COPY THE PEF INTO THE SYSTEM HEAP AND PREPARE THE FRAGMENT FROM THE COPY.
+     *
+     * Step 2's second run caught why this matters. GetDriverMemoryFragment prepares a
+     * fragment from the memory you hand it, and CFM uses the PEF's code section
+     * IN PLACE — only the data section gets copied. Handing it the resource handle
+     * therefore left our handler's code inside the APPLICATION's heap:
+     *
+     *     PEF resource at 0x3DB234E0
+     *     OUR TVector = 0x018743D0 -> code=0x3DB2355C toc=0x018743F0
+     *                                      ^ inside the PEF buffer, app heap
+     *
+     * SetDriverClosureMemory(connID, true) returned 0, but holding the closure does
+     * not relocate a code section CFM never copied. Step 3 would have installed a
+     * handler whose code disappears when this app quits — precisely the failure the
+     * 68K 'preload' bug caused. Same lesson a third time: never let another
+     * allocator decide which heap your resident code lives in. */
+    sysPef = NewPtrSys(pefLen);
+    if (sysPef == NULL) {
+        CDLogf("  could not allocate %ld bytes in the system heap for the PEF",
+               (long)pefLen);
+        CDProgressSay("NO SYSTEM MEMORY for the PEF");
+        goto done;
+    }
+    BlockMoveData(*pefH, sysPef, pefLen);
+    HUnlock(pefH);
+    ReleaseResource(pefH);      /* nothing ties the resident code to this app now */
+    CDLogf("  PEF copied to the SYSTEM heap at 0x%08lX", (unsigned long)sysPef);
 
     /* --- 2. prepare the fragment --- */
-    CDLogStep("GetDriverMemoryFragment");
-    err = GetDriverMemoryFragment(*pefH, (long)pefLen, "\pCDAudioEngine",
+    CDLogStep("GetDriverMemoryFragment (from the system-heap copy)");
+    err = GetDriverMemoryFragment(sysPef, (long)pefLen, "\pCDAudioEngine",
                                   &connID,
                                   (DriverEntryPointPtr *)&fragMain,
                                   (DriverDescriptionPtr *)&driverDesc);
@@ -180,6 +213,10 @@ int main(void)
            (unsigned long)gInfo.ourCode, (unsigned long)gInfo.ourTOC);
     CDLogf("  ring=0x%08lX entries=%ld  patched=%d",
            (unsigned long)gInfo.ring, gInfo.ringEntries, gInfo.patched);
+    CDLogf("  sanity: our code 0x%08lX must NOT be inside the PEF resource handle;",
+           (unsigned long)gInfo.ourCode);
+    CDLogf("          it should sit near the system-heap copy at 0x%08lX",
+           (unsigned long)sysPef);
 
     if (gInfo.status == kEngineOK) {
         CDLogf("  ⇒ STEP 3 IS SAFE TO ATTEMPT. It would write our TVector");

@@ -80,7 +80,13 @@ enum {
     kEngineNotPowerPCISA    = 7,   /* descriptor is not kPowerPCISA             */
     kEngineBadTVector       = 8,   /* saved TVector implausible                 */
     kEngineNoMemory         = 9,
-    kEngineAlreadyPatched   = 10
+    kEngineAlreadyPatched   = 10,
+    kEngineCodeInAppHeap    = 11    /* our own code section is inside the        */
+                                    /* application heap, so it would vanish when */
+                                    /* the installer quits. Caught on hardware:  */
+                                    /* CFM uses a PEF's code section IN PLACE,   */
+                                    /* so the PEF must be copied to the system   */
+                                    /* heap BEFORE GetDriverMemoryFragment.      */
 };
 
 /* Filled in by kInitialize, printed by the installer. Everything the Step-3 patch
