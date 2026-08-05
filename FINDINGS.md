@@ -642,3 +642,61 @@ Trade-offs, not yet resolved:
 CD Access, it is good enough and 2b proceeds on it. If iTunes still breaks even with the
 name preserved and the real ATAPI driver targeted, then interposing at the `dCtlDriver`
 level is too invasive and the descriptor-field patch becomes the design.
+
+## The decisive log, 2026-08-05 — and two corrections to my own claims
+
+`CD Patch Log`, four `CDPatchInstall` runs across three boots.
+
+### Correction 1: the dry-run build never ran
+
+The log contains **zero** dry-run output — no `DRY RUN` banner, no `entry ctl`, no
+`first word`, no `header 0x00`. The grey-screen run was an **older build** still sitting
+on the OS 9 machine.
+
+That is my process failure, not the user's. `feedback_version_stamp_installed_artifacts`
+exists precisely for this, and every other artifact in the project honours it —
+`CDRecon_v2`, `CDPlayProbe_v2`, `CDAudioSpike_v1`, `CDTraceDump_v1`, `CDCtlDump_v1` —
+while I shipped this one as plain `CDPatchInstall`, four times, with no way for anyone to
+tell which build was on the machine. **Everything from here carries a version in its
+name.**
+
+### Correction 2: we HAD patched the ATAPI driver — three times
+
+I said the real ATAPI driver had never been successfully patched. Wrong. Three of the
+four runs show `unit 65 refNum -66 '.AppleCD'` immediately before
+`install result: INSTALLED`:
+
+| run | unit 65 before | loader | result | session ended |
+|---|---|---|---|---|
+| A | `.AppleCD` | pre-`NewPtrSys` (no "blob copied" line) | **INSTALLED** | MacsBug |
+| B | `.CDAudio` | `NewPtrSys` | already patched (**changed nothing**) | fine |
+| C | `.AppleCD` | `NewPtrSys` | **INSTALLED** | MacsBug |
+| D | `.AppleCD` | `NewPtrSys` | **INSTALLED** | grey screen |
+
+Runs C and D both used the fixed `NewPtrSys` loader, so neither crash is explained by the
+`preload` bug. The install *itself* always succeeds; the machine dies when the patched
+driver is first **used** — which, thanks to the alert pumping `SystemTask`, is seconds
+later via `accRun`.
+
+### ⇒ The real conclusion, now well evidenced
+
+| interposition target | attempts | outcome |
+|---|---|---|
+| the **classic** early driver (parade, `0x00FFE02E`, plain 68K entries) | 1 | worked, **126 calls traced**, machine stable |
+| the **ATAPI** driver (`0x0164xxxx`, `0xAAFE` Mixed Mode descriptors) | 3 | **crashed every time** |
+
+**A 68K shell plus tail-jump works on a classic DRVR and fails on this
+Mixed-Mode-descriptor driver.** Not a coincidence at 3/3, and it identifies the mechanism:
+
+- Unpatched, the Device Manager JSRs the descriptor directly, and Mixed Mode performs
+  exactly one 68K→PPC transition.
+- Patched, the DM JSRs our 68K stub, which jumps to our 68K shim, which calls a 68K C
+  function, and then `RTS`es into the descriptor. **We inserted an extra 68K↔PPC boundary
+  that did not exist before**, and did it inside a driver entry with a register-based
+  calling convention.
+
+The TVector-field patch in PHASE2.md §8 inserts **no new boundary at all**: the DM still
+JSRs the same descriptor, Mixed Mode performs the same single transition, and it lands in
+our PowerPC routine instead of Apple's. That is the minimal possible intervention, and it
+removes precisely the mechanism that is crashing. What was a reasonable-looking
+alternative is now the evidence-backed design.
