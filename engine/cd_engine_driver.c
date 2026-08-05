@@ -21,6 +21,7 @@
 #include <Disks.h>
 #include <Files.h>
 #include <MacMemory.h>
+#include <MixedMode.h>
 #include <Timer.h>
 #include <Events.h>
 
@@ -201,8 +202,8 @@ static OSErr EngineInit(CDEngineInfo *info)
     DCtlPtr         dce;
     unsigned char  *base;
     DRVRHeaderPtr   hdr;
-    unsigned char  *rd;
-    unsigned long  *tv;
+    RoutineDescriptorPtr rd;
+    unsigned long       *tv;
 
     if (info == NULL) return paramErr;
 
@@ -237,28 +238,23 @@ static OSErr EngineInit(CDEngineInfo *info)
         return noErr;
     }
 
-    rd = base + (unsigned short)hdr->drvrCtl;
+    /* Typed access through MixedMode.h's real structs, so an offset cannot be
+     * mis-transcribed again. Step 2's first run failed exactly that way. */
+    rd = (RoutineDescriptorPtr)(base + (unsigned short)hdr->drvrCtl);
     info->ctlDescriptor = (Ptr)rd;
 
     /* Is it the Mixed Mode descriptor we characterised? */
-    if ((unsigned short)((rd[kRDMagicOffset] << 8) | rd[kRDMagicOffset + 1])
-            != kRDMagic) {
+    if (rd->goMixedModeTrap != kRDMagic) {
         info->status = kEngineNotDescriptor;
         return noErr;
     }
-    info->rdVersion = rd[2];
-    info->procInfo  = ((unsigned long)rd[kRDProcInfoOffset]     << 24) |
-                      ((unsigned long)rd[kRDProcInfoOffset + 1] << 16) |
-                      ((unsigned long)rd[kRDProcInfoOffset + 2] << 8)  |
-                       (unsigned long)rd[kRDProcInfoOffset + 3];
-    info->isa       = rd[kRDISAOffset];
+    info->rdVersion = (UInt8)rd->version;
+    info->procInfo  = (UInt32)rd->routineRecords[0].procInfo;
+    info->isa       = (UInt8)rd->routineRecords[0].ISA;
 
     if (info->isa != kRDISAPowerPC) { info->status = kEngineNotPowerPCISA; return noErr; }
 
-    info->origTVector = (Ptr)(((unsigned long)rd[kRDTVectorOffset]     << 24) |
-                              ((unsigned long)rd[kRDTVectorOffset + 1] << 16) |
-                              ((unsigned long)rd[kRDTVectorOffset + 2] << 8)  |
-                               (unsigned long)rd[kRDTVectorOffset + 3]);
+    info->origTVector = (Ptr)rd->routineRecords[0].procDescriptor;
 
     if (info->origTVector == NULL || ((unsigned long)info->origTVector & 3)) {
         info->status = kEngineBadTVector;

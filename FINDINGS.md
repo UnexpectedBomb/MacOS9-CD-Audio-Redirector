@@ -700,3 +700,73 @@ JSRs the same descriptor, Mixed Mode performs the same single transition, and it
 our PowerPC routine instead of Apple's. That is the minimal possible intervention, and it
 removes precisely the mechanism that is crashing. What was a reasonable-looking
 alternative is now the evidence-backed design.
+
+---
+
+# Step 2 findings — hardware, 2026-08-05
+
+Artifact: `CDEngineInstall_v1`. Log: `logs/2026-08-05-CDEngineInstall_v1-step2-run1-mini.log`.
+
+**The all-PowerPC architecture works. Residency is proven. And the validation guard
+caught a transcription bug of mine before anything was written — which is the whole
+reason Step 2 exists as a separate step.**
+
+## Proven
+
+```
+PEF at 0x3EA24EC0, 4789 bytes
+GetDriverMemoryFragment err=0 connID=0x00000ADF main=0x017E5C4C desc=0x017E5BB0
+SetDriverClosureMemory err=0
+DoDriverIO returned 0
+magic=0x43444531 version=1
+cdRefNum=-66  dCtlDriver=0x01621DB0  ctlDescriptor=0x01621F04
+```
+
+- **The PEF is accepted.** `GetDriverMemoryFragment` returned 0 with a real connID and
+  main, so the fragment's exports and its patched `main` are correct.
+- **Residency is proven.** `SetDriverClosureMemory(connID, true)` returned 0, so the
+  code outlives the application — without `InstallDriverFromMemory` and without a
+  `RegEntryID` this driver does not have.
+- **Our PowerPC code ran.** `DoDriverIO` returned 0 and filled the info block, magic
+  `'CDE1'` intact.
+- **Discovery works.** refNum −66 found by passive name scan, and
+  `0x01621F04 − 0x01621DB0 = 0x154`, exactly the `drvrCtl` offset characterised in
+  Phase 0.
+
+Every previous approach failed before reaching this point. Nothing was modified.
+
+## ⚠ The bug the guard caught: descriptor offsets off by four
+
+```
+descriptor: rdVersion=0x07 procInfo=0x00000000 ISA=0x17
+⇒ DO NOT PROCEED to Step 3: descriptor ISA is not PowerPC
+```
+
+`rdVersion = 0x07` is right, but `procInfo` should be `0x00179822` and `ISA` should be
+`0x01`. I had transcribed the offsets as procInfo +0x08, ISA +0x0D, procDescriptor
++0x10. The true layout, from `MixedMode.h:198` and `:177`, is **procInfo +0x0C, ISA
++0x11, procDescriptor +0x14** — 32 bytes total, which is exactly why `.AppleCD`'s five
+entries sit 0x20 apart.
+
+The log's own numbers prove the correction: reading "ISA" at +0x0D returned **0x17**,
+which is the second byte of procInfo (0x00**17**9822), and reading "procInfo" at +0x08
+returned 0, which is `reserved2`/`selectorInfo`/`routineCount`. Both wrong values are
+exactly what the wrong offsets would produce.
+
+**This is the guard earning its place.** Had the ISA check not been there, Step 3 would
+have written a TVector at +0x10, landing across `reserved1`, `ISA` and `routineFlags` —
+corrupting the descriptor the Device Manager uses on every CD Control call, with a crash
+as the best case and silent misbehaviour as the worst. The reason Step 2 patches nothing
+is precisely so a mistake at this stage costs a log line instead of a session.
+
+**Fixed by removing the failure mode, not the numbers:** the engine now uses
+`MixedMode.h`'s real `RoutineDescriptorPtr` and reads
+`rd->routineRecords[0].ISA` / `.procDescriptor`, so an offset cannot be mis-transcribed
+again. Step 3's write becomes one typed assignment. `CDCtlDump`'s decoder had the same
+four-byte slip in code that had never been exercised; corrected too.
+
+## What Step 2's next run should show
+
+`procInfo = 0x00179822`, `ISA = 0x01`, a non-zero original TVector with plausible code
+and TOC words, our own TVector likewise, a non-zero ring, and
+`⇒ STEP 3 IS SAFE TO ATTEMPT`.

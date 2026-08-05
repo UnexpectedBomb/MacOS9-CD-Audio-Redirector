@@ -16,7 +16,7 @@
  * descriptor — inside a driver entry with a register-based calling convention.
  *
  * This design inserts NO new boundary. We change one field: the descriptor's
- * `procDescriptor`, at descriptor + 0x10, which holds the PowerPC TVector. The Device
+ * `procDescriptor`, at descriptor + 0x14, which holds the PowerPC TVector. The Device
  * Manager still JSRs the same descriptor, Mixed Mode still performs the same single
  * transition with the same `procInfo` and the same `ISA = kPowerPCISA`, and it lands
  * in our routine instead of Apple's. The DRVR header, the driver's name, its address
@@ -43,20 +43,29 @@
 #define kEngineMagic    FOUR_CHAR_CODE('CDE1')
 #define kEngineVersion  1
 
-/* Offsets within a Mixed Mode routine descriptor, confirmed by dumping .AppleCD's
- * five entries on hardware (FINDINGS.md, Phase 2 pre-work):
- *   +0x00  0xAAFE          _MixedModeDispatch magic
- *   +0x02  version (0x07), flags
- *   +0x08  procInfo        0x00179822 = kRegisterBased, word result in D0
- *   +0x0D  ISA             0x01 = kPowerPCISA
- *   +0x10  procDescriptor  the TVector — THE ONE FIELD WE CHANGE
+/* ★ DO NOT HAND-COUNT OFFSETS INTO A ROUTINE DESCRIPTOR. Use MixedMode.h's real
+ * `RoutineDescriptor` / `RoutineRecord` structs.
+ *
+ * Step 2's first hardware run failed on exactly this: I transcribed the offsets as
+ * procInfo +0x08, ISA +0x0D, procDescriptor +0x10, when the true layout is +0x0C,
+ * +0x11 and +0x14 — every one off by four. The run read ISA = 0x17, which is the
+ * second byte of procInfo (0x00_17_9822), and procInfo = 0 from the reserved and
+ * routineCount bytes. The validation guard caught it and refused, which is the only
+ * reason nothing was corrupted: writing a TVector at +0x10 would have landed across
+ * reserved1/ISA/routineFlags.
+ *
+ * The real layout, from MixedMode.h:198 and :177, is 32 bytes — which is why
+ * .AppleCD's five entries sit exactly 0x20 apart:
+ *   +0x00 goMixedModeTrap (0xAAFE)   +0x0C procInfo
+ *   +0x02 version                    +0x10 reserved1
+ *   +0x03 flags                      +0x11 ISA
+ *   +0x04 reserved1                  +0x12 routineFlags
+ *   +0x08 reserved2                  +0x14 procDescriptor  <- the one field we change
+ *   +0x09 selectorInfo               +0x18 reserved2
+ *   +0x0A routineCount               +0x1C selector
  */
-#define kRDMagicOffset      0x00
-#define kRDProcInfoOffset   0x08
-#define kRDISAOffset        0x0D
-#define kRDTVectorOffset    0x10
 #define kRDMagic            0xAAFE
-#define kRDISAPowerPC       0x01
+#define kRDISAPowerPC       kPowerPCISA
 
 /* Status from kInitialize. Distinct from the old 68K installer's codes so no log line
  * can be confused between the two generations. */

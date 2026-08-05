@@ -144,18 +144,24 @@ static const unsigned char *DecodeFirstJump(const unsigned char *p,
      * a way that would have mattered. All five of .AppleCD's entries turn out to
      * be exactly this, wrapping native PowerPC routines. */
     if (op == 0xAAFE) {
-        unsigned char  isa    = p[13];
-        unsigned long  proc   = ((unsigned long)p[16] << 24)
-                              | ((unsigned long)p[17] << 16)
-                              | ((unsigned long)p[18] << 8)
-                              |  (unsigned long)p[19];
-        unsigned long  info   = ((unsigned long)p[8]  << 24)
-                              | ((unsigned long)p[9]  << 16)
-                              | ((unsigned long)p[10] << 8)
-                              |  (unsigned long)p[11];
+        /* ★ Offsets corrected 2026-08-05. This originally read ISA at +13 and the
+         * TVector at +16, four bytes early in both cases — the same transcription
+         * slip that made the Step-2 engine read ISA = 0x17 (the second byte of
+         * procInfo) and refuse to patch. The real layout is MixedMode.h:198/:177:
+         * procInfo +0x0C, ISA +0x11, procDescriptor +0x14, 32 bytes total. Anything
+         * new should use RoutineDescriptorPtr rather than counting bytes. */
+        unsigned char  isa    = p[0x11];
+        unsigned long  proc   = ((unsigned long)p[0x14] << 24)
+                              | ((unsigned long)p[0x15] << 16)
+                              | ((unsigned long)p[0x16] << 8)
+                              |  (unsigned long)p[0x17];
+        unsigned long  info   = ((unsigned long)p[0x0C] << 24)
+                              | ((unsigned long)p[0x0D] << 16)
+                              | ((unsigned long)p[0x0E] << 8)
+                              |  (unsigned long)p[0x0F];
         CDLogf("  ⇒ MIXED MODE ROUTINE DESCRIPTOR, not 68K code:");
         CDLogf("      version=0x%02X flags=0x%02X routineCount=%d",
-               p[2], p[3], (int)((p[10] << 8) | p[11]));
+               p[2], p[3], (int)((p[0x0A] << 8) | p[0x0B]));
         CDLogf("      procInfo=0x%08lX  (low nibble %lu: 2 = kRegisterBased)",
                info, info & 0x0F);
         CDLogf("      ISA=0x%02X  (0 = 68K, 1 = PowerPC)", isa);
