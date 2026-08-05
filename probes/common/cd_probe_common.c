@@ -109,7 +109,11 @@ Boolean CDLogOpen(ConstStr255Param fileName)
     FSSpec spec;
     long   eof;
 
-    gLogRef = 0;
+    /* Idempotent. Calling this twice used to be silently fatal: the second
+     * FSpOpenDF on a file already open for writing returns opWrErr, the old
+     * refNum leaked, gLogRef was left at 0, and every subsequent log line
+     * vanished without a word. That ate the Phase-1 spike's listener verdicts. */
+    if (gLogRef != 0) return true;
     if (FindFolder(kOnSystemDisk, kSystemFolderType, kDontCreateFolder,
                    &vRefNum, &dirID) != noErr) return false;
     gLogVRef = vRefNum;

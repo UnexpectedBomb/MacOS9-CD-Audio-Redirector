@@ -801,8 +801,13 @@ done:
         a2 = -1;
     }
 
-    /* --- record the verdicts --- */
-    CDLogOpen("\pCD Audio Spike Log");
+    /* --- record the verdicts --- *
+     * The log is still open here: only CDLogFlush was called above, not
+     * CDLogClose. v1 re-opened it "to be safe", which was silently fatal — the
+     * second FSpOpenDF on a file already open for writing fails with opWrErr, so
+     * gLogRef went to 0 and every line below was dropped. The whole point of the
+     * run, the listener's answers, went missing. CDLogOpen is idempotent now, and
+     * this call is gone. */
     CDLogf("--- listener verdicts ---");
     {
         static const char *byteOrder[] = { "FIRST: 'sowt', no swap",
