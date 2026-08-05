@@ -834,3 +834,68 @@ then hand that over.**
 range like everything else CFM-owned), **not** near the PEF resource handle, and
 `⇒ STEP 3 IS SAFE TO ATTEMPT`. That is the last thing standing between here and the
 one-line patch.
+
+## Step 2 run 3 — PASSED. All Step-3 prerequisites verified
+
+```
+PEF resource at 0x3DB23510, 4789 bytes
+PEF copied to the SYSTEM heap at 0x018A7770
+GetDriverMemoryFragment err=0 connID=0x000009BB main=0x0187EE6C
+SetDriverClosureMemory err=0
+status=0 (OK - descriptor validated)
+cdRefNum=-66  dCtlDriver=0x0161FFD0  ctlDescriptor=0x01620124
+descriptor: rdVersion=0x07 procInfo=0x00179822 ISA=0x01
+ORIGINAL TVector = 0x01766DE8 -> code=0x01763CE0 toc=0x0176EC10
+OUR      TVector = 0x0187EE60 -> code=0x018A77EC toc=0x0187EE80
+ring=0x018C12F0 entries=512  patched=0
+⇒ STEP 3 IS SAFE TO ATTEMPT
+```
+
+`0x018A77EC` is `0x018A7770 + 0x7C` — our code is inside the **system-heap** PEF copy, not
+the resource handle at `0x3DB23510`, and the application-zone guard passed.
+`ctlDescriptor − dCtlDriver = 0x154`, matching Phase 0 exactly.
+
+Everything Step 3 depends on is now established on hardware: the fragment is accepted,
+the closure is held, the code is in the system heap, the descriptor is located and reads
+exactly as characterised, both TVectors are real and self-consistent, and the ring is
+allocated. Three runs, nothing modified, two defects caught.
+
+# Step 3 — the one-field patch (built 2026-08-05, not yet run)
+
+`CDEngineInstall_v2`. Modifier keys, with the harmless action as the default:
+
+| launch | action |
+|---|---|
+| plain | validate only, exactly as Step 2 |
+| **option** | **patch**: write our TVector into `procDescriptor` |
+| **shift** | unpatch: write the saved TVector back |
+
+The patch is one aligned 4-byte store,
+`gCtlRD->routineRecords[0].procDescriptor = (ProcPtr)CDEngineControl`, through
+`MixedMode.h`'s real struct. `procInfo` and `ISA` are untouched, so Mixed Mode performs
+exactly the transition it performs today and simply lands in our routine.
+
+Safety properties that make this different from every earlier attempt:
+
+- **The default action is still validation.** Patching needs a deliberate keypress. The
+  two defects Step 2 caught would each have corrupted the machine had the default been
+  "modify".
+- **Everything is re-validated immediately before the store** — magic, ISA, and that
+  `procDescriptor` still holds the value we saved — because the driver could have been
+  reloaded since init.
+- **The value is read back after writing** and reported, so the log states what is
+  actually in the driver rather than what we intended.
+- **The patch never survives a restart.** Nothing is installed in the Extensions folder
+  and nothing persists, so recovery is always simply a reboot. That is a much better
+  position than the extension generation, where a bad patch came back on every boot.
+- **`patch/` is retired**, not deleted: it holds the 126-call trace and the evidence that
+  the 68K shell works on a classic DRVR.
+- The handler reads Ticks from the low-memory global rather than calling `TickCount()`,
+  because it may run at interrupt time and a plain aligned read is safer there than a
+  trap.
+- Patch/unpatch state lives in the **engine's** globals, never in the installer's info
+  block — that block is an application global and dies when the app quits.
+
+**No trace reader yet, deliberately.** The two questions this run answers are "does it
+crash" and "does iTunes still work". Reading the ring needs a publication channel for the
+engine's globals, and that is worth building only once the patch is known to be safe.

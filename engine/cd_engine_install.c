@@ -47,7 +47,7 @@
 #include "cd_probe_common.h"
 #include "cd_engine.h"
 
-#define kVersionString  "CDEngineInstall v1"
+#define kVersionString  "CDEngineInstall v2"
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
 #define kEnginePEFID    128
 
@@ -83,6 +83,8 @@ static const char *StatusText(short s)
 
 int main(void)
 {
+    KeyMap             km;
+    Boolean            commit, undo;
     Boolean            logOK;
     Handle             pefH;
     Size               pefLen;
@@ -103,14 +105,27 @@ int main(void)
 
     memset(&gInfo, 0, sizeof(gInfo));
 
+    /* ★ The default action stays the harmless one. Validation is what caught an
+     * off-by-four descriptor offset and then our own code sitting in the application
+     * heap — two defects that would each have corrupted or crashed the machine had the
+     * default been "patch". Patching requires holding a key on purpose. */
+    GetKeys(km);
+    commit = KeyIsDown(km, kOptionKeyCode);
+    undo   = KeyIsDown(km, kShiftKeyCode);
+    if (undo) commit = false;
+
     CDProgressOpen("\p" kVersionString " - progress");
     CDProgressSay("%s starting", kVersionString);
-    CDProgressSay("STEP 2: residency + validation only. Nothing is modified.");
+    if (undo)        CDProgressSay("SHIFT held: will UNPATCH and restore the driver");
+    else if (commit) CDProgressSay("OPTION held: will PATCH the Control descriptor");
+    else             CDProgressSay("validation only - nothing will be modified");
 
     logOK = CDLogOpen("\pCD Engine Log");
     if (!logOK) CDProgressSay("!! could not open the log - screen only");
-    CDLogBanner(kVersionString " - Step 2: make the PPC engine resident",
-                "VALIDATION ONLY. The CD driver is not modified in any way.");
+    CDLogBanner(kVersionString " - resident PPC engine + one-field Control patch",
+                undo   ? "SHIFT HELD: restoring the original TVector"
+                       : (commit ? "OPTION HELD: patching the Control descriptor"
+                                 : "VALIDATION ONLY. Nothing is modified."));
 
     /* --- 1. the PEF --- */
     CDLogStep("Get1Resource('cdPF', 128)");
@@ -232,8 +247,49 @@ int main(void)
         CDProgressSay("NOT validated: %s", StatusText(gInfo.status));
     }
 
+    /* --- 5. Step 3: patch or unpatch, only when asked --- */
+    if (gInfo.status == kEngineOK && (commit || undo)) {
+        EngineIOProc      io = (EngineIOProc)fragMain;
+        IOCommandContents cc;
+        OSErr             perr;
+
+        cc.pb = (ParmBlkPtr)&gInfo;
+
+        if (undo) {
+            CDLogStep("DoDriverIO(unpatch) - restore the original TVector");
+            perr = io(NULL, NULL, cc, kEngineUnpatchCommand, 0);
+            CDLogf("  unpatch returned %d, status=%d, patched=%d",
+                   perr, gInfo.status, gInfo.patched);
+            CDProgressSay("UNPATCHED (patched=%d)", gInfo.patched);
+        } else {
+            CDLogStep("DoDriverIO(patch) - write our TVector into the descriptor");
+            perr = io(NULL, NULL, cc, kEnginePatchCommand, 0);
+            CDLogf("  patch returned %d, status=%d, patched=%d",
+                   perr, gInfo.status, gInfo.patched);
+            if (perr == noErr && gInfo.patched && gInfo.status == kEngineOK) {
+                CDLogf("  ⇒ PATCHED, and read back correct. The Control descriptor now");
+                CDLogf("    points at 0x%08lX instead of 0x%08lX. Every CD Control call",
+                       (unsigned long)gInfo.ourTVector,
+                       (unsigned long)gInfo.origTVector);
+                CDLogf("    from now on goes through our handler and is chained on.");
+                CDLogf("  ⇒ NOW TEST COEXISTENCE: does iTunes still read the audio CD,");
+                CDLogf("    and does CDRecon_v2 still show the 'Audio CD 1' volume?");
+                CDProgressSay("PATCHED - now test iTunes and CDRecon");
+            } else {
+                CDLogf("  ⇒ the patch did NOT take. Nothing should have changed; the");
+                CDLogf("    engine re-validates immediately before the store and");
+                CDLogf("    refuses if anything moved.");
+                CDProgressSay("patch REFUSED (status=%d)", gInfo.status);
+            }
+        }
+    } else if (commit || undo) {
+        CDLogf("  ⇒ refusing to %s: validation did not pass (%s)",
+               undo ? "unpatch" : "patch", StatusText(gInfo.status));
+    }
+
     CDLogf("  NOTE: run this once per boot. A second run prepares a second fragment.");
-    CDLogf("=== end of run: nothing was modified ===");
+    CDLogf("  NOTE: the patch NEVER survives a restart. Recovery is always a reboot.");
+    CDLogf("=== end of run ===");
 
 done:
     CDLogClose();

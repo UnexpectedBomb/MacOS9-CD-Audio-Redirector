@@ -136,7 +136,14 @@ typedef struct {
 /* The command code we invoke DoDriverIO with. We call it ourselves rather than
  * letting the Device Manager do it — the fragment is never installed into the unit
  * table — so `contents` carries a CDEngineInfo* instead of a DriverInitInfo*. */
-#define kEngineInitCommand      7    /* kInitializeCommand */
-#define kEngineFinalizeCommand  8    /* kFinalizeCommand   */
+#define kEngineInitCommand      7    /* kInitializeCommand: validate, change nothing */
+#define kEngineFinalizeCommand  8    /* kFinalizeCommand                             */
+
+/* Step 3. Deliberately separate commands so that "validate" and "modify" can never be
+ * the same call by accident — every hardware failure in this project so far came from
+ * modifying the driver, and two of them were caught only because validation was a
+ * distinct, harmless step. */
+#define kEnginePatchCommand     0x4344      /* 'CD' : write our TVector in     */
+#define kEngineUnpatchCommand   0x4355      /* 'CU' : write the saved one back */
 
 #endif /* CD_ENGINE_H */

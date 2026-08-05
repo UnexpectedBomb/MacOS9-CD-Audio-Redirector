@@ -34,6 +34,9 @@
 /* ApplicZone() is not in the PowerPC import libs for this toolchain, so the
  * application zone comes from its low-memory global like everything else here. */
 #define LM_ApplZone         (*(THz *)0x02AA)
+/* Ticks straight from low memory. The handler may run at interrupt time, and a plain
+ * aligned read is strictly safer there than a Toolbox trap. */
+#define LM_Ticks            (*(volatile unsigned long *)0x016A)
 
 #define kNoQueueBit         0x0200
 
@@ -91,6 +94,12 @@ static CDEngineInfo   *gInfo       = NULL;
 static volatile long   gWriteCount = 0;   /* monotonic; masked to pick the slot */
 static volatile long   gCallCount  = 0;
 
+/* Everything patch/unpatch needs, held HERE rather than in the caller's info block —
+ * that block is a global in the installer application and dies when it quits. */
+static RoutineDescriptorPtr gCtlRD      = NULL;
+static ProcPtr              gSavedTV    = NULL;
+static Boolean              gPatched    = false;
+
 /* ---- the Control handler --------------------------------------------------- *
  * Not yet reachable in Step 2. When the descriptor's TVector is repointed here, Mixed
  * Mode invokes this with the SAME procInfo the original had — kRegisterBased with
@@ -110,7 +119,7 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
         CDEngineTrace *e = &gRing[gWriteCount & (kEngineRingEntries - 1)];
         int            i;
 
-        e->ticks  = TickCount();
+        e->ticks  = LM_Ticks;
         e->csCode = ((CntrlParam *)pb)->csCode;
         e->ioTrap = (unsigned short)pb->ioParam.ioTrap;
         for (i = 0; i < 8; i++)
@@ -298,12 +307,73 @@ static OSErr EngineInit(CDEngineInfo *info)
     info->ring        = (Ptr)gRing;
     info->ringEntries = kEngineRingEntries;
 
-    /* Saved for Step 3's chaining, and kept resident here rather than in the info
-     * block so the handler never has to dereference caller-owned memory. */
+    /* Kept resident here rather than in the info block, so neither the handler nor
+     * a later patch/unpatch ever dereferences caller-owned memory. */
     gOrigCtl = (CDCtlProc)info->origTVector;
+    gCtlRD   = rd;
+    gSavedTV = rd->routineRecords[0].procDescriptor;
     gInfo    = info;
 
     /* ★ Deliberately NOT writing rd[kRDTVectorOffset..]. Step 3 does that. */
+    return noErr;
+}
+
+/* ---- Step 3: the patch, and its exact inverse ------------------------------ *
+ * One aligned 4-byte store into `procDescriptor`. procInfo and ISA are left alone, so
+ * Mixed Mode performs exactly the transition it performs today and simply lands in our
+ * routine. The DRVR header, the driver's name, its address and dCtlDriver are all
+ * untouched — which is what makes this different from the 68K shell that broke iTunes.
+ *
+ * Everything is re-validated at the moment of writing rather than trusted from the
+ * earlier init call: the driver could have been reloaded in between. */
+static OSErr EnginePatch(CDEngineInfo *info)
+{
+    if (info != NULL) info->patched = 0;
+
+    if (gCtlRD == NULL || gOrigCtl == NULL || gRing == NULL) return paramErr;
+    if (gPatched) {
+        if (info != NULL) { info->status = kEngineAlreadyPatched; }
+        return noErr;
+    }
+
+    /* Re-check the descriptor, now, immediately before the store. */
+    if (gCtlRD->goMixedModeTrap != kRDMagic)              return paramErr;
+    if (gCtlRD->routineRecords[0].ISA != kRDISAPowerPC)   return paramErr;
+    if (gCtlRD->routineRecords[0].procDescriptor != gSavedTV) return paramErr;
+
+    /* ★ THE PATCH. */
+    gCtlRD->routineRecords[0].procDescriptor = (ProcPtr)CDEngineControl;
+    gPatched = true;
+
+    if (info != NULL) {
+        info->patched     = 1;
+        info->origTVector = (Ptr)gSavedTV;
+        info->ourTVector  = (Ptr)CDEngineControl;
+        /* Read it back, so the caller reports what is actually in the driver now
+         * rather than what we intended to put there. */
+        info->ring        = (Ptr)gRing;
+        info->status      = (gCtlRD->routineRecords[0].procDescriptor ==
+                             (ProcPtr)CDEngineControl) ? kEngineOK : kEngineBadTVector;
+    }
+    return noErr;
+}
+
+static OSErr EngineUnpatch(CDEngineInfo *info)
+{
+    if (gCtlRD == NULL || gSavedTV == NULL) return paramErr;
+    if (!gPatched) { if (info != NULL) info->patched = 0; return noErr; }
+
+    gCtlRD->routineRecords[0].procDescriptor = gSavedTV;
+    gPatched = false;
+
+    if (info != NULL) {
+        info->patched = 0;
+        info->status  = (gCtlRD->routineRecords[0].procDescriptor == gSavedTV)
+                        ? kEngineOK : kEngineBadTVector;
+    }
+    /* The ring is deliberately not freed: a Control call could still be inside the
+     * handler, and leaking one small system-heap block until restart is far cheaper
+     * than freeing memory something might still be using. */
     return noErr;
 }
 
@@ -334,6 +404,10 @@ OSErr DoDriverIO(AddressSpaceID spaceID, IOCommandID cmdID,
     switch (code) {
         case kEngineInitCommand:
             return EngineInit((CDEngineInfo *)contents.pb);
+        case kEnginePatchCommand:
+            return EnginePatch((CDEngineInfo *)contents.pb);
+        case kEngineUnpatchCommand:
+            return EngineUnpatch((CDEngineInfo *)contents.pb);
         case kEngineFinalizeCommand:
             return EngineFinalize();
         default:
