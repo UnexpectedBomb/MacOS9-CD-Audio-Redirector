@@ -1,0 +1,329 @@
+/*
+ * cd_engine_driver.c — the resident PowerPC engine for the CD Audio Redirector.
+ *
+ * Built as a PEF shaped like a native driver, purely so that
+ * `GetDriverMemoryFragment` will accept it and `SetDriverClosureMemory(connID, true)`
+ * will hold its memory. It is deliberately **never installed into the unit table**:
+ * we want resident PowerPC code, not a device driver the OS might try to open, close
+ * or bind to a node. That also sidesteps `InstallDriverFromMemory` needing a
+ * `RegEntryID`, which this CD driver does not have — `'nmrg'` returns −18 and
+ * `dCtlNodeID` is 0.
+ *
+ * See cd_engine.h for why the engine is PowerPC and why the patch is one field.
+ *
+ * ★ STEP 2 DOES NOT PATCH. kInitialize finds the driver, validates the descriptor,
+ * saves the original TVector and reports. `CDEngineControl` exists so its TVector is
+ * real and so Step 3 is a one-line change, but nothing points at it yet.
+ */
+
+#include <MacTypes.h>
+#include <Devices.h>
+#include <Disks.h>
+#include <Files.h>
+#include <MacMemory.h>
+#include <Timer.h>
+#include <Events.h>
+
+#include "cd_engine.h"
+#include "cd_cscodes.h"
+
+/* Low-memory globals by absolute address, as everywhere else in this project. */
+#define LM_UTableBase       (*(Ptr *)0x011C)
+#define LM_UnitEntryCount   (*(short *)0x01D2)
+
+#define kNoQueueBit         0x0200
+
+/* ---- the driver description ------------------------------------------------ *
+ * A fragment must declare at least one service or VerifyFragmentAsDriver rejects it
+ * (DriverFamilyMatching.h: "The List of Services (at least one)"). The values are
+ * copied from the shape this project already got accepted on hardware for the eSATA
+ * work. driverRuntime is 0: we are not discovered, not opened upon load and not under
+ * expert control, because nothing should manage this fragment but us. */
+
+#define FOURCC(a,b,c,d) ((OSType)(((UInt32)(a)<<24)|((UInt32)(b)<<16)|((UInt32)(c)<<8)|(UInt32)(d)))
+
+typedef struct {
+    OSType     serviceCategory;
+    OSType     serviceType;
+    NumVersion serviceVersion;
+} EngineServiceInfo;
+
+typedef struct {
+    OSType            sig;
+    UInt32            descVersion;
+    Str31             nameInfoStr;
+    NumVersion        typeVersion;
+    UInt32            driverRuntime;
+    Str31             driverName;
+    UInt32            reserved[8];
+    UInt32            nServices;
+    EngineServiceInfo service0;
+} EngineDriverDescription;
+
+EngineDriverDescription TheDriverDescription = {
+    FOURCC('m','t','e','j'),                  /* kTheDescriptionSignature       */
+    0,                                        /* kInitialDriverDescriptor       */
+    /* Str31 as an explicit byte list: a brace-wrapped string literal is not a
+     * load-time-computable initializer for unsigned char[32] here. 13 = strlen. */
+    { 13,'C','D','A','u','d','i','o','E','n','g','i','n','e' },
+    { 1, 0, 0x80 /*final*/, 0 },
+    0x00000000UL,                             /* managed by nobody but us       */
+    { 13,'C','D','A','u','d','i','o','E','n','g','i','n','e' },
+    { 0,0,0,0,0,0,0,0 },
+    1,
+    { FOURCC('n','d','r','v'), FOURCC('b','l','o','k'), { 1, 0, 0x80, 0 } }
+};
+
+/* ---- resident state ------------------------------------------------------- *
+ * Reached through the TOC, which is correct on entry because we are always called
+ * through a TVector. This is the thing the 68K flat code resource had to work around
+ * with dbUserInfo and relocation. */
+
+typedef OSErr (*CDCtlProc)(ParmBlkPtr pb, DCtlPtr dce);
+
+static CDCtlProc       gOrigCtl    = NULL;
+static CDEngineTrace  *gRing       = NULL;
+static CDEngineInfo   *gInfo       = NULL;
+static volatile long   gWriteCount = 0;   /* monotonic; masked to pick the slot */
+static volatile long   gCallCount  = 0;
+
+/* ---- the Control handler --------------------------------------------------- *
+ * Not yet reachable in Step 2. When the descriptor's TVector is repointed here, Mixed
+ * Mode invokes this with the SAME procInfo the original had — kRegisterBased with
+ * A0 = ParmBlkPtr, A1 = DCtlPtr, word result in D0 — which for a PowerPC routine
+ * arrives as ordinary arguments and an ordinary return value.
+ *
+ * INTERRUPT SAFETY: Control may be issued asynchronously, so this may run below task
+ * level. It does nothing but plain stores into a pre-allocated ring, then chains. No
+ * allocation, no File Manager, no logging, no waiting.
+ *
+ * Chaining is a plain indirect call through the saved TVector and it RETURNS, because
+ * that is exactly what Mixed Mode does when the Device Manager calls the original. So
+ * whatever the original does about jIODone for a queued request, it keeps doing. */
+OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
+{
+    if (gRing != NULL && pb != NULL) {
+        CDEngineTrace *e = &gRing[gWriteCount & (kEngineRingEntries - 1)];
+        int            i;
+
+        e->ticks  = TickCount();
+        e->csCode = ((CntrlParam *)pb)->csCode;
+        e->ioTrap = (unsigned short)pb->ioParam.ioTrap;
+        for (i = 0; i < 8; i++)
+            e->csParam[i] = ((unsigned char *)((CntrlParam *)pb)->csParam)[i];
+
+        /* Incremented last, so a reader never sees a count that outruns its
+         * contents. Plain stores throughout: this may be interrupt time. */
+        gWriteCount++;
+        gCallCount++;
+    }
+
+    if (gOrigCtl == NULL) return controlErr;
+    return gOrigCtl(pb, dce);
+}
+
+/* ---- passive driver discovery --------------------------------------------- *
+ * Read each DCE's DRVR header name straight out of memory and look for ".AppleCD".
+ * No driver is called, so this cannot hang the way the Phase-0 unit-table sweep did —
+ * that hang came from issuing Status calls to arbitrary drivers, one of which never
+ * completed. Every pointer is checked and every name byte must be printable. */
+
+static Boolean GetUnitName(short refNum, unsigned char *out, short outMax)
+{
+    DCtlHandle     dceH;
+    DCtlPtr        dce;
+    unsigned char *base;
+    DRVRHeaderPtr  hdr;
+    short          len, i;
+
+    dceH = GetDCtlEntry(refNum);
+    if (dceH == NULL || *dceH == NULL) return false;
+    dce = *dceH;
+
+    if (dce->dCtlFlags & dRAMBasedMask) {
+        Handle hh = (Handle)dce->dCtlDriver;
+        if (hh == NULL || *hh == NULL) return false;
+        base = (unsigned char *)(*hh);
+    } else {
+        base = (unsigned char *)dce->dCtlDriver;
+    }
+    if (base == NULL || ((unsigned long)base & 1) ||
+        (unsigned long)base < 0x1000)
+        return false;
+
+    hdr = (DRVRHeaderPtr)base;
+    len = hdr->drvrName[0];
+    if (len < 1 || len > 31 || len >= outMax) return false;
+    for (i = 1; i <= len; i++) {
+        unsigned char c = hdr->drvrName[i];
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+    for (i = 0; i <= len; i++) out[i] = hdr->drvrName[i];
+    return true;
+}
+
+static Boolean NameIsAppleCD(const unsigned char *p)
+{
+    static const char want[8] = { '.','A','P','P','L','E','C','D' };
+    short i;
+
+    if (p[0] != 8) return false;
+    for (i = 0; i < 8; i++) {
+        unsigned char c = p[1 + i];
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        if (c != (unsigned char)want[i]) return false;
+    }
+    return true;
+}
+
+static short FindCDRefNum(void)
+{
+    Ptr   utable = LM_UTableBase;
+    short count  = LM_UnitEntryCount;
+    short i;
+
+    if (utable == NULL || count <= 0 || count > 256) return 0;
+    for (i = 0; i < count; i++) {
+        unsigned char name[36];
+        if (((DCtlHandle *)utable)[i] == NULL) continue;
+        if (!GetUnitName((short)~i, name, sizeof(name))) continue;
+        if (NameIsAppleCD(name)) return (short)~i;
+    }
+    return 0;
+}
+
+/* ---- kInitialize: validate and report, change nothing --------------------- */
+
+static OSErr EngineInit(CDEngineInfo *info)
+{
+    short           refNum;
+    DCtlHandle      dceH;
+    DCtlPtr         dce;
+    unsigned char  *base;
+    DRVRHeaderPtr   hdr;
+    unsigned char  *rd;
+    unsigned long  *tv;
+
+    if (info == NULL) return paramErr;
+
+    /* The caller zeroes this, but do not depend on it. */
+    info->magic   = kEngineMagic;
+    info->version = kEngineVersion;
+    info->patched = 0;
+    info->status  = kEngineOK;
+
+    refNum = FindCDRefNum();
+    if (refNum == 0) { info->status = kEngineNoDriver; return noErr; }
+    info->cdRefNum = refNum;
+
+    dceH = GetDCtlEntry(refNum);
+    if (dceH == NULL || *dceH == NULL) { info->status = kEngineNoDCE; return noErr; }
+    dce = *dceH;
+
+    if (dce->dCtlFlags & dRAMBasedMask) { info->status = kEngineRAMBased; return noErr; }
+
+    base = (unsigned char *)dce->dCtlDriver;
+    if (base == NULL || ((unsigned long)base & 1) ||
+        (unsigned long)base < 0x1000) {
+        info->status = kEngineBadDriverPtr;
+        return noErr;
+    }
+    info->dCtlDriver = (Ptr)base;
+    hdr = (DRVRHeaderPtr)base;
+
+    if (hdr->drvrCtl == 0 || (hdr->drvrCtl & 1) ||
+        hdr->drvrCtl < 0x12 || (unsigned short)hdr->drvrCtl > 0x4000) {
+        info->status = kEngineNotDRVRShape;
+        return noErr;
+    }
+
+    rd = base + (unsigned short)hdr->drvrCtl;
+    info->ctlDescriptor = (Ptr)rd;
+
+    /* Is it the Mixed Mode descriptor we characterised? */
+    if ((unsigned short)((rd[kRDMagicOffset] << 8) | rd[kRDMagicOffset + 1])
+            != kRDMagic) {
+        info->status = kEngineNotDescriptor;
+        return noErr;
+    }
+    info->rdVersion = rd[2];
+    info->procInfo  = ((unsigned long)rd[kRDProcInfoOffset]     << 24) |
+                      ((unsigned long)rd[kRDProcInfoOffset + 1] << 16) |
+                      ((unsigned long)rd[kRDProcInfoOffset + 2] << 8)  |
+                       (unsigned long)rd[kRDProcInfoOffset + 3];
+    info->isa       = rd[kRDISAOffset];
+
+    if (info->isa != kRDISAPowerPC) { info->status = kEngineNotPowerPCISA; return noErr; }
+
+    info->origTVector = (Ptr)(((unsigned long)rd[kRDTVectorOffset]     << 24) |
+                              ((unsigned long)rd[kRDTVectorOffset + 1] << 16) |
+                              ((unsigned long)rd[kRDTVectorOffset + 2] << 8)  |
+                               (unsigned long)rd[kRDTVectorOffset + 3]);
+
+    if (info->origTVector == NULL || ((unsigned long)info->origTVector & 3)) {
+        info->status = kEngineBadTVector;
+        return noErr;
+    }
+
+    /* A TVector is two words: the code address and the TOC. Reading both is the
+     * cheapest sanity check that we are looking at one, and it gives Step 3 a value
+     * to compare against after the write. */
+    tv = (unsigned long *)info->origTVector;
+    info->origCode = tv[0];
+    info->origTOC  = tv[1];
+
+    /* Our own handler. In CFM a function pointer IS the TVector address. */
+    info->ourTVector = (Ptr)CDEngineControl;
+    tv = (unsigned long *)info->ourTVector;
+    info->ourCode = tv[0];
+    info->ourTOC  = tv[1];
+
+    /* Allocate the ring now, so Step 3 has nothing left to fail at. */
+    gRing = (CDEngineTrace *)NewPtrSysClear(
+                (Size)(kEngineRingEntries * sizeof(CDEngineTrace)));
+    if (gRing == NULL) { info->status = kEngineNoMemory; return noErr; }
+    info->ring        = (Ptr)gRing;
+    info->ringEntries = kEngineRingEntries;
+
+    /* Saved for Step 3's chaining, and kept resident here rather than in the info
+     * block so the handler never has to dereference caller-owned memory. */
+    gOrigCtl = (CDCtlProc)info->origTVector;
+    gInfo    = info;
+
+    /* ★ Deliberately NOT writing rd[kRDTVectorOffset..]. Step 3 does that. */
+    return noErr;
+}
+
+static OSErr EngineFinalize(void)
+{
+    /* Nothing to undo in Step 2: nothing was patched. The ring is deliberately not
+     * freed — once Step 3 is live a Control call could be inside the handler, and
+     * leaking one small system-heap block until restart is far cheaper than freeing
+     * memory something might still be using. */
+    gOrigCtl = NULL;
+    gInfo    = NULL;
+    return noErr;
+}
+
+/* ---- the native-driver entry point ---------------------------------------- *
+ * Called by US, never by the Device Manager, because this fragment is never installed
+ * into the unit table. So `contents` carries a CDEngineInfo* rather than the
+ * DriverInitInfo* the Device Manager would pass. */
+
+/* The real signature from Devices.h:291. We are the only caller, so `contents`
+ * carries a CDEngineInfo* in its `pb` member rather than the DriverInitInfo* the
+ * Device Manager would pass. It is a union of pointers, so this is well defined. */
+OSErr DoDriverIO(AddressSpaceID spaceID, IOCommandID cmdID,
+                 IOCommandContents contents, IOCommandCode code, IOCommandKind kind)
+{
+    (void)spaceID; (void)cmdID; (void)kind;
+
+    switch (code) {
+        case kEngineInitCommand:
+            return EngineInit((CDEngineInfo *)contents.pb);
+        case kEngineFinalizeCommand:
+            return EngineFinalize();
+        default:
+            return paramErr;
+    }
+}
