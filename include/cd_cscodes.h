@@ -8,22 +8,29 @@
  * to the CD driver therefore ends up with magic numbers sprinkled through it.
  * This is the one place those numbers live.
  *
- * PROVENANCE — READ THIS BEFORE TRUSTING A NUMBER
- * -----------------------------------------------
- * The csCode values below are transcribed from the Control/Status dispatch of
- * Basilisk II's `BasiliskII/src/cdrom.cpp` (cebix/macemu), which implements the
- * guest-visible Apple CD-ROM driver API. That is a re-implementation, not Apple
- * documentation, so treat the numbers as HIGH CONFIDENCE / NOT YET VERIFIED ON
- * HARDWARE until the Phase-0 recon run confirms them against a real driver.
+ * PROVENANCE — VERIFIED ON HARDWARE 2026-08-05
+ * --------------------------------------------
+ * The csCode values were transcribed from the Control/Status dispatch of Basilisk
+ * II's `BasiliskII/src/cdrom.cpp` (cebix/macemu), then checked against a real
+ * driver: `.AppleCD` version 1.4.8, an ATAPI ('atpi') classic DRVR, on a G4 mini
+ * under Mac OS 9. See FINDINGS.md for the raw evidence.
  *
- * Independent cross-check on the Control/Status split, from Apple's `develop`
- * issue 3 (MacTech mirror, "ROM Audio"): audio playback is driven by five
- * *DControl* subcalls (AudioPlay, AudioPause, AudioScan, AudioStop, AudioSearch)
- * while disc/drive state comes from two *DStatus* subcalls (ReadTOC,
- * AudioStatus). Basilisk's table does not preserve that split cleanly, so the
- * STATUS-vs-CONTROL classification below is the weakest claim in this header.
- * CDRecon deliberately probes the read-only calls BOTH ways and logs both
- * results; the answer lands in PHASE0.md when the run comes back.
+ * ★ THE STATUS-vs-CONTROL SPLIT IS SETTLED, AND NOT THE WAY THE DOCS SAY.
+ * Every audio and TOC call on this driver is a **Control** call. Issued as Status
+ * they return -18 (statusErr): confirmed for 100 ReadTOC, 101 ReadQ,
+ * 107 AudioStatus, 112 ReadAudioVolume, 126 GetPlayMode and 97 WhoIsThere.
+ * Basilisk's table, which puts them all under Control, was right.
+ *
+ * Apple's `develop` issue 3 (MacTech mirror, "ROM Audio") says ReadTOC and
+ * AudioStatus are *DStatus* subcalls. That describes the older SCSI AppleCD SC
+ * driver and does **not** apply to the ATAPI-era `.AppleCD`. Do not "fix" this
+ * header back to match that article.
+ *
+ * Also verified: the ReadTOC action code works as a **word** at csParam+0
+ * (`csParam[0] = action`); the byte-at-offset-0 alternative was never needed.
+ * AudioPlay/AudioTrackSearch accept posType = 0 with the MSF form — though on this
+ * driver "accept" means noErr without the drive ever moving, so that pins down
+ * what it parses, not what it acts on.
  *
  * csParam layouts are byte offsets into CntrlParam.csParam (which C declares as
  * short csParam[11], i.e. 22 bytes). Where a field's width or encoding is
@@ -53,8 +60,14 @@
 #define kcsSetPollFreq         81   /* uses dCtlDelay                           */
 
 /* ---- Apple CD-ROM driver, TOC / Q sub-channel ----------------------------- */
-/* Per develop issue 3 these two are STATUS calls. Basilisk lists them in the
- * Control dispatch. Probed both ways. */
+/* CONTROL calls, verified. Both return -18 if issued as Status.
+ *
+ * ReadQ's 10 bytes, decoded from a live drive and cross-checked against the TOC
+ * (the relative and absolute positions closed to the exact frame):
+ *   [0] control/adr nibbles   [1] track (BCD)   [2] index (BCD)
+ *   [3..5] track-relative M, S, F (BCD)
+ *   [6..8] absolute M, S, F (BCD)
+ * This is the layout our extension has to emulate. */
 #define kcsReadTOC            100   /* csParam+0: action code — see below       */
 #define kcsReadTheQSubcode    101   /* csParam+0..9: 10 bytes of subcode        */
 
@@ -75,12 +88,22 @@
 
 /* ---- Apple CD-ROM driver, the legacy audio surface we intercept ------------ */
 /* These are the calls a mixed-mode game issues to play its music, and the whole
- * reason this project exists. Control unless noted. */
+ * reason this project exists. ALL Control calls, verified on hardware.
+ *
+ * ★ On the G4 mini's .AppleCD 1.4.8, every one of these returns noErr and the
+ * drive never moves: AudioTrackSearch does not seek, AudioPlay does not play, and
+ * AudioStatus/ReadQ keep reporting a stale frozen position. Accepted and ignored.
+ * So our interception cannot lean on the driver for playback position — the
+ * extension must answer AudioStatus/ReadQ from its own playback cursor. */
 #define kcsAudioTrackSearch   103   /* +0 postype, +2 position, +6 hold, +9 mode */
 #define kcsAudioPlay          104   /* +0 postype, +2 position, +6 stop, +9 mode */
 #define kcsAudioPause         105   /* +0: 0 = resume, 1 = pause                 */
 #define kcsAudioStop          106   /* +0 postype, +2 position                   */
-#define kcsAudioStatus        107   /* STATUS per develop; +0..4 status fields    */
+#define kcsAudioStatus        107   /* Control (NOT Status). +3..5 = absolute     */
+                                    /* M, S, F in BCD, matching ReadQ's. +0..2    */
+                                    /* were 0x00 throughout; presumably play      */
+                                    /* state and mode, unconfirmed because the    */
+                                    /* drive never played.                        */
 #define kcsAudioScan          108   /* +0 postype, +2 position, +6 direction      */
 #define kcsAudioControl       109   /* +0: left volume, +1: right volume          */
 #define kcsReadAudioVolume    112   /* +0 left, +1 right (read-only)              */
@@ -107,10 +130,13 @@
 #define kCDDABytesPerSec  (kCDDASectorBytes * kCDDASectorsPerSec)
 #define kCDDALeadInSectors    150   /* MSF→LBA: (((M*60)+S)*75+F) - 150        */
 
-/* CD-DA on the disc is 16-bit signed LITTLE-endian. The Sound Manager will take
- * it as-is if handed 'sowt' (k16BitLittleEndianFormat, Sound.h:472) via
- * SndDoubleBufferHeader2.dbhFormat (Sound.h:985) — so the byte swap FEASIBILITY
- * §3 calls mandatory is probably avoidable. To be confirmed in Phase 1. */
+/* CD-DA on the disc is 16-bit signed LITTLE-endian — CONFIRMED on hardware: the
+ * sectors read back peak at 16450 read as LE (a normal music level) versus 32766
+ * read as BE (pinned at clipping, the signature of wrong-endian noise), and
+ * hand-decoding the samples agrees. The Sound Manager will take them as-is if
+ * handed 'sowt' (k16BitLittleEndianFormat, Sound.h:472) via
+ * SndDoubleBufferHeader2.dbhFormat (Sound.h:985), so the byte swap FEASIBILITY §3
+ * calls mandatory is avoidable. Still to be proven end-to-end in Phase 1. */
 
 /* BCD helpers — the TOC returns track numbers and MSF in BCD. */
 #define kBCDToBin(b)  ((((b) >> 4) & 0x0F) * 10 + ((b) & 0x0F))
