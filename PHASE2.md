@@ -257,3 +257,56 @@ code resource needs:
 
 This is the piece 2a has to get right, and it is a supported path rather than a
 hand-rolled one.
+
+---
+
+## 8. Re-plan after three installer crashes: go all-PowerPC, patch one field
+
+Written 2026-08-05 after `CDPatchInstall` crashed a third time — this time on a **dry
+run that modifies nothing**, ending at a grey screen.
+
+### What the evidence actually says
+
+| | runs | outcome |
+|---|---|---|
+| PowerPC apps (CDRecon, CDCtlDump, CDPlayProbe, CDAudioSpike, CDTraceDump) | many | all reliable |
+| the one 68K app (CDPatchInstall) | 4 | 3 crashed |
+| patch installed over the **early** parade driver | 1 | worked, 126 calls traced |
+| patch installed over the **pristine ATAPI** driver | 0 | never succeeded |
+
+Two readings fit: "the 68K app is unreliable on this machine" and "touching the
+pristine ATAPI driver is unreliable". They are not yet separated, and the pending
+`CD Patch Log` should separate them, since it names the last step before the crash.
+
+### The design this points to
+
+Drop 68K from the project entirely and stop swapping `dCtlDriver`:
+
+1. **Installer: a PowerPC app**, reusing `probes/common` — the logging and driver
+   discovery that have been reliable here for a dozen runs.
+2. **Handler + engine: PowerPC**, made resident with `InstallDriverFromMemory` — the
+   route proven on hardware by USB2 (R2b-3). Phase 1's engine is already PowerPC, so
+   this is *closer* to the working code than the 68K rewrite was.
+3. **The patch becomes a single aligned 4-byte write.** The Control entry is a Mixed
+   Mode descriptor whose `procDescriptor` field (descriptor + 0x10) holds the PPC
+   TVector. Repoint that one field at our own TVector and the DRVR header, the driver's
+   name, its address and `dCtlDriver` are all **untouched**. No shell, no impersonation,
+   so the entire class of failure that broke iTunes cannot recur. `ISA` stays
+   `kPowerPCISA`, so no unsafe two-write window either.
+4. **Chaining is an ordinary indirect call** through the saved TVector.
+5. **Uninstall is writing the saved 4 bytes back.**
+
+### What stays unresolved
+
+Who performs `jIODone` for queued requests. The original evidently does it itself today,
+so chaining is fine — but `AudioStatus` and `ReadQ` both arrive **queued** and are exactly
+the calls 2b must answer itself, so completing a queued request from PowerPC needs a real
+answer rather than the 68K push-and-RTS trick. That is the first thing to settle in the
+re-plan, and it is settled by reading, not by installing.
+
+### Cost of the change
+
+The 68K blob, INIT and installer are discarded — roughly a day of work. What survives:
+the whole Phase 0/1 body of facts, the Phase-1 engine (already PowerPC), the trace-ring
+design, the csCode map, the immediate-vs-queued finding, and `probes/common`. Phases 0
+and 1 are untouched and remain independently valuable.
