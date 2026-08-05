@@ -589,3 +589,56 @@ to revisit if the driver ever turns out to be patchable that early.
 `CDPatchInstall` logs the blob's address as `0x` followed by a **decimal** number
 (`AppendNum` is decimal). Cosmetic, but misleading in a log; worth fixing next time the
 file is touched.
+
+## Causation confirmed, and a less invasive design to consider
+
+**Confirmed 2026-08-05:** removing the extension and rebooting restored iTunes' ability
+to read an audio CD. So the patch was the cause, not the disc and not a coincidence.
+Two rebuilds address the two known defects (name preserved; the install now requires the
+real ATAPI driver), but neither has been tested for coexistence yet.
+
+### The deeper issue: swapping `dCtlDriver` changes the driver's identity
+
+Every problem in this episode traces to one design choice — replacing `dCtlDriver` with
+a shell of our own. That makes our block *become* the driver as far as the rest of the
+system is concerned, so:
+
+- its name is what name-based lookups find (broke Audio CD Access / iTunes);
+- its address is what anything caching `dCtlDriver` sees;
+- and whatever would later have installed the real ATAPI driver is either blocked by us
+  or silently clobbers us.
+
+### The alternative: patch one field inside the existing descriptor
+
+The Control entry at `origBase + 0x154` is a 32-byte Mixed Mode routine descriptor whose
+`procDescriptor` field (descriptor + 0x10) holds the PPC TVector `0x017678E8`. That field
+alone could be repointed at our own routine, leaving the DRVR header, the name, the
+address and `dCtlDriver` **completely untouched**. The entire class of
+"we changed the driver's identity" failures disappears, and uninstall becomes a 4-byte
+write of the saved value.
+
+Trade-offs, not yet resolved:
+
+- **Atomicity favours it.** Repointing one aligned 4-byte field is effectively atomic,
+  whereas building a shell and swapping `dCtlDriver` is also a single aligned write but
+  leaves a *semantically* half-patched driver visible (ours) for the rest of the session.
+- **ISA is the catch.** The descriptor says `ISA = kPowerPCISA`. Pointing it at 68K code
+  means also flipping the ISA byte, and no ordering of those two writes is safe — either
+  window has a moment where a call would execute code under the wrong architecture.
+  Keeping `ISA = PowerPC` means our handler must be a **PPC** routine, which needs the
+  `InstallDriverFromMemory` residency route — more machinery, but it is proven on this
+  project (USB2 R2b-3), and Phase 1's engine is already PowerPC, so it is *closer* to the
+  working code than a 68K rewrite is.
+- **Chaining gets easier**, not harder: from PPC, calling the saved original TVector is
+  an ordinary indirect call. From 68K we would JSR a private *copy* of the original
+  32-byte descriptor, which also works since a descriptor is self-contained.
+- **Open question for either route:** who performs `jIODone` for queued requests. The
+  original PPC routine evidently does it itself today (queued Control calls work), so
+  chaining is fine — but for the codes we answer ourselves (`AudioStatus`, `ReadQ`, both
+  observed queued) we must complete the request, and doing that from PPC needs a callable
+  path to `jIODone` rather than the 68K push-and-RTS trick.
+
+**Decision gate:** if the rebuilt shell-swap patch coexists cleanly with iTunes and Audio
+CD Access, it is good enough and 2b proceeds on it. If iTunes still breaks even with the
+name preserved and the real ATAPI driver targeted, then interposing at the `dCtlDriver`
+level is too invasive and the descriptor-field patch becomes the design.
