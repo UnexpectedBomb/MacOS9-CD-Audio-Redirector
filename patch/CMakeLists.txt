@@ -53,3 +53,16 @@ add_custom_command(TARGET CDPatch2a POST_BUILD
             ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Pushing CDPatch2a to pi3.local:/home/csell/shared/"
     VERBATIM)
+
+# --- on-demand installer app (68K, so it can $$read the same blob) ---
+# The first hardware boot refused to patch because no CD driver existed yet during
+# the extension parade. This app performs the identical install from a normal
+# application, after everything has loaded, so the patch mechanics are testable
+# without a reboot per attempt.
+add_application(CDPatchInstall
+    cd_patch_install.c
+    cd_patch_install.r
+    TYPE    "APPL"
+    CREATOR "CDpi")
+target_include_directories(CDPatchInstall PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+add_dependencies(CDPatchInstall_APPL cd_patch_blob)

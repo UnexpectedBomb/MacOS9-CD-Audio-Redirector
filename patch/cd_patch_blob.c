@@ -59,7 +59,9 @@
 
 /* Low-memory globals, by absolute address: the accessors come in flavours that
  * differ between headers and this has to be unambiguous in boot code. */
-#define LM_DrvQHdr      ((QHdrPtr)0x0308)
+#define LM_DrvQHdr          ((QHdrPtr)0x0308)
+#define LM_UTableBase       (*(Ptr *)0x011C)
+#define LM_UnitEntryCount   (*(short *)0x01D2)
 
 #define kRingEntries    512          /* power of two, so masking picks the slot */
 
@@ -134,36 +136,136 @@ void CDTraceControl(ParmBlkPtr pb, DCtlPtr dce)
 }
 
 /* ---- driver discovery ---------------------------------------------------- *
- * Drive queue only, and by DriverGestalt 'devt' rather than by the name
- * ".AppleCD": the name varies across ATAPI-era builds, and the unit-table sweep
- * hung the Phase-0 probes on their first hardware run. This runs during the INIT
- * parade, where the fewer drivers we poke the better. */
+ * ★ REVISED after the first hardware boot. v1 walked the DRIVE QUEUE only and
+ * asked each of its drivers, via DriverGestalt, whether it was a CD. On the real
+ * machine that found nothing at INIT-parade time and the install correctly refused.
+ * The drive queue lists DRIVES, and the CD drive is not necessarily enumerated that
+ * early even when .AppleCD is already loaded.
+ *
+ * So the primary strategy is now a PASSIVE unit-table scan: read each DCE's DRVR
+ * header name straight out of memory and look for ".AppleCD". No driver is called,
+ * so this cannot hang the way the Phase-0 unit-table sweep did — that hang came from
+ * issuing Status calls to arbitrary drivers, one of which never completed. Reading
+ * bytes is not that.
+ *
+ * Name matching was something I argued against earlier, on the grounds that the
+ * ATAPI-era driver's name varies across builds. It is the right call here anyway:
+ * we measured the name on this hardware (".AppleCD", FINDINGS.md), a passive read is
+ * enormously safer during the parade than calling into unknown drivers, and the one
+ * candidate we find by name then gets verified with a single DriverGestalt call. */
+
+#define kMaxUnits 256
+
+/* Passively fetch a unit's DRVR name into a buffer. Returns false if anything about
+ * the DCE or the pointer looks wrong — nothing here is worth a bus error at boot. */
+static Boolean GetUnitDriverName(short refNum, unsigned char *out, short outMax)
+{
+    DCtlHandle     dceH;
+    DCtlPtr        dce;
+    unsigned char *base;
+    DRVRHeaderPtr  hdr;
+    short          len, i;
+
+    dceH = GetDCtlEntry(refNum);
+    if (dceH == NULL || *dceH == NULL) return false;
+    dce = *dceH;
+
+    if (dce->dCtlFlags & dRAMBasedMask) {
+        Handle hh = (Handle)dce->dCtlDriver;
+        if (hh == NULL || *hh == NULL) return false;
+        base = (unsigned char *)(*hh);
+    } else {
+        base = (unsigned char *)dce->dCtlDriver;
+    }
+    if (base == NULL || ((unsigned long)base & 1) ||
+        (unsigned long)base < 0x1000)
+        return false;
+
+    hdr = (DRVRHeaderPtr)base;
+    len = hdr->drvrName[0];
+    if (len < 1 || len > 31 || len >= outMax) return false;
+
+    /* Every byte must be printable, or we are not looking at a name. */
+    for (i = 1; i <= len; i++) {
+        unsigned char c = hdr->drvrName[i];
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+
+    for (i = 0; i <= len; i++) out[i] = hdr->drvrName[i];
+    return true;
+}
+
+static Boolean NameIsAppleCD(const unsigned char *p)
+{
+    /* Pascal ".AppleCD", case-insensitive, exact length. */
+    static const char *want = ".APPLECD";
+    short i;
+
+    if (p[0] != 8) return false;
+    for (i = 0; i < 8; i++) {
+        unsigned char c = p[1 + i];
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        if (c != (unsigned char)want[i]) return false;
+    }
+    return true;
+}
+
+static Boolean VerifyIsCD(short refNum)
+{
+    DriverGestaltParam pb;
+    short i;
+
+    for (i = 0; i < (short)sizeof(pb); i++) ((char *)&pb)[i] = 0;
+    pb.ioCRefNum             = refNum;
+    pb.csCode                = kcsDriverGestalt;
+    pb.driverGestaltSelector = kdgDeviceType;
+    return (PBStatusSync((ParmBlkPtr)&pb) == noErr &&
+            pb.driverGestaltResponse == kdgCDType);
+}
+
 static short FindCDRefNum(void)
 {
-    DrvQElPtr q = (DrvQElPtr)LM_DrvQHdr->qHead;
-    short     seen[16];
-    short     nSeen = 0;
+    Ptr   utable = LM_UTableBase;
+    short count  = LM_UnitEntryCount;
+    short i;
 
-    while (q != NULL && nSeen < 16) {
-        short   refNum = q->dQRefNum;
-        Boolean dup    = false;
-        short   i;
+    /* --- primary: passive name scan of the unit table --- */
+    if (utable != NULL && count > 0 && count <= kMaxUnits) {
+        for (i = 0; i < count; i++) {
+            unsigned char name[36];
+            short         refNum = (short)~i;
 
-        for (i = 0; i < nSeen; i++) if (seen[i] == refNum) dup = true;
-        if (!dup) {
-            DriverGestaltParam pb;
-            seen[nSeen++] = refNum;
+            if (((DCtlHandle *)utable)[i] == NULL) continue;
+            if (!GetUnitDriverName(refNum, name, sizeof(name))) continue;
+            if (!NameIsAppleCD(name)) continue;
 
-            for (i = 0; i < (short)sizeof(pb); i++) ((char *)&pb)[i] = 0;
-            pb.ioCRefNum             = refNum;
-            pb.csCode                = kcsDriverGestalt;
-            pb.driverGestaltSelector = kdgDeviceType;
-            if (PBStatusSync((ParmBlkPtr)&pb) == noErr &&
-                pb.driverGestaltResponse == kdgCDType)
-                return refNum;
+            /* One call, to a driver we are now confident about. If it does not
+             * answer 'cdrm' we still take it: the name is an exact match and the
+             * shape checks in the installer are the real gate. */
+            (void)VerifyIsCD(refNum);
+            return refNum;
         }
-        q = (DrvQElPtr)q->qLink;
     }
+
+    /* --- fallback: the drive queue, as v1 did --- */
+    {
+        DrvQElPtr q = (DrvQElPtr)LM_DrvQHdr->qHead;
+        short     seen[16];
+        short     nSeen = 0;
+
+        while (q != NULL && nSeen < 16) {
+            short   refNum = q->dQRefNum;
+            Boolean dup    = false;
+
+            for (i = 0; i < nSeen; i++) if (seen[i] == refNum) dup = true;
+            if (!dup) {
+                seen[nSeen++] = refNum;
+                if (VerifyIsCD(refNum)) return refNum;
+            }
+            q = (DrvQElPtr)q->qLink;
+        }
+    }
+
     return 0;
 }
 

@@ -21,19 +21,42 @@ startup.
 4. Every outcome is one line in **`CD Patch Log`** in the System Folder, flushed, so
    even a hang after that point leaves the reason on disc.
 
-## What to do
+## What to do — start with the app, not the boot
 
-1. Drop `CDPatch2a.bin` (decompressed) into Extensions on the LAB volume. Restart.
-2. Read `CD Patch Log` — expect `CD Patch 2a: INSTALLED`.
-3. Do something with the drive: insert an audio CD, or run `CDRecon_v2`, or play a
-   track in iTunes.
-4. Run **`CDTraceDump_v1`**. It reports whether the patch is installed, how many
-   calls it has seen, and dumps the ring.
-5. Send back `CD Trace Log` and `CD Patch Log`.
+The first hardware attempt (2026-08-05) refused to patch at boot: the INIT ran during
+the extension parade, found no CD driver, and logged
+`no CD driver yet (load order - rename to sort later)`. That is the safe path working,
+but it meant the patch's mechanics could not be tested at all. So test from the app
+first, where boot timing is irrelevant.
 
-**To remove it:** hold **option** when launching `CDTraceDump_v1` and it restores the
-original `dCtlDriver` live, no reboot needed. Or just take the extension out of the
-folder and restart.
+### 1. Prove the patch works (no reboot, no risk)
+
+1. Run **`CDPatchInstall`**. It performs the *identical* install from a normal
+   application — same `'CDpt'` blob, same system-heap residency — long after every
+   extension has loaded and the drive has been enumerated. It also dumps the whole
+   unit table by name and the drive queue into `CD Patch Log`, which is what tells us
+   why the boot attempt failed.
+2. Touch the drive: insert an audio CD, play a track in iTunes, or run `CDRecon_v2`.
+3. Run **`CDTraceDump_v1`** and send back `CD Trace Log` + `CD Patch Log`.
+
+The patch stays resident after `CDPatchInstall` quits, because the blob is detached
+and locked in the **system** heap — it belongs to the system, not to the app.
+
+### 2. Then fix the boot path
+
+`CD Patch Log`'s unit-table dump answers which fix is needed:
+
+- **`.AppleCD` is absent from the unit table** ⇒ the driver's own extension had not
+  loaded yet. Rename this extension to sort later (`~CD Audio Patch 2a`; `~` is 0x7E
+  and sorts after every letter).
+- **`.AppleCD` is present but the drive queue was empty** ⇒ load order was fine and v1
+  simply looked in the wrong place. The revised blob now scans the unit table by name
+  first, so a reboot should just work.
+
+### Removing it
+
+Hold **option** when launching `CDTraceDump_v1` to restore the original `dCtlDriver`
+live, no reboot. Or take the extension out of Extensions and restart.
 
 ## What 2a is actually proving
 
@@ -61,6 +84,15 @@ rewrite `csParam` afterwards — which is exactly what synthesising `AudioStatus
 - **The tracer is interrupt-safe.** Control can be issued asynchronously, so the
   handler may run below task level. It does nothing but plain stores into a
   pre-allocated ring: no allocation, no File Manager, no logging, no waiting.
+- **Discovery is a passive unit-table name scan**, revised after the first boot. v1
+  walked the drive queue and asked each of its drivers via DriverGestalt; that found
+  nothing during the parade, because the drive queue lists *drives* and the CD drive
+  may not be enumerated that early even when `.AppleCD` is loaded. The scan now reads
+  each DCE's DRVR header name straight out of memory and looks for `.AppleCD`, calling
+  no driver at all — so it cannot hang the way the Phase-0 unit-table sweep did, since
+  that hang came from issuing Status calls to arbitrary drivers. The single candidate
+  found by name is then verified with one DriverGestalt call, and the drive-queue path
+  remains as a fallback.
 - **Only `drvrCtl` is ours.** The other four entries are 6-byte `JMP` stubs to the
   original's absolute entries. Those entries are Mixed Mode routine descriptors
   wrapping native PowerPC, and a `JMP` to a descriptor behaves exactly like the
