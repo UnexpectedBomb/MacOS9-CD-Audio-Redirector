@@ -42,9 +42,34 @@
 #include <Script.h>
 #include <ToolUtils.h>
 #include <CodeFragments.h>
+#include <AppleEvents.h>
+#include <AEInteraction.h>      /* AEProcessAppleEvent lives here, not in AppleEvents.h */
 
 #include <stdio.h>
 #include <string.h>
+
+/* ★ TWO BUILDS FROM THIS ONE SOURCE.
+ *
+ *   CD_FACELESS = 0   CDPump — the diagnostic tool. Opens a progress window,
+ *                     requires a modifier key before it will touch anything, and
+ *                     stops on a click. This is what every hardware run so far used.
+ *
+ *   CD_FACELESS = 1   CD Audio Redirector — the artifact people install. Drops into
+ *                     Startup Items, patches with no key held, opens no window, and
+ *                     runs until the machine shuts down.
+ *
+ * One source rather than two, because the thing being shipped must be the thing that
+ * was tested. The differences are confined to: whether the progress window opens,
+ * whether a modifier key is required, and how the pump loop ends.
+ *
+ * ⚠ It still cannot be a real INIT, for three reasons established earlier and none of
+ * them softened by going faceless: an INIT has no ongoing task-level context; the
+ * audio must run outside any driver Control call (the deadlock); and an INIT patches
+ * before the real ATAPI driver exists. A Startup Items app is the same one file and
+ * one restart from the user's point of view. */
+#ifndef CD_FACELESS
+#define CD_FACELESS 0
+#endif
 
 #include "cd_probe_common.h"
 #include "cd_engine.h"
@@ -59,8 +84,33 @@ extern void  CDPumpIdle(void);
 extern void  CDPumpStats(Boolean *playing, long *underruns, long *delivered);
 extern void  CDPumpSetPublic(CDEnginePublic *pub);
 
+#if CD_FACELESS
+/* With no window and no menu there is nothing to click, so the quit Apple event is the
+ * only orderly way to stop. Handling it matters: a background app that ignores quit can
+ * stall shutdown, and stalling the user's shutdown is a far worse bug than anything this
+ * extension is trying to fix. */
+static Boolean gQuitRequested = false;
+
+static pascal OSErr HandleQuitEvent(const AppleEvent *ae, AppleEvent *reply, long refCon)
+{
+    (void)ae; (void)reply; (void)refCon;
+    gQuitRequested = true;
+    return noErr;
+}
+
+/* The Finder sends 'oapp' at launch. Nothing to do with it, but an app that declares
+ * itself high-level-event-aware and then has no handler leaves the event to fail; a
+ * no-op handler is two lines and removes the question. */
+static pascal OSErr HandleOpenAppEvent(const AppleEvent *ae, AppleEvent *reply,
+                                       long refCon)
+{
+    (void)ae; (void)reply; (void)refCon;
+    return noErr;
+}
+#endif
+
 /* Watch the engine's mailbox and service what the game asked for. Returns when the user
- * clicks or presses a key.
+ * clicks or presses a key — or, in the faceless build, when asked to quit.
  *
  * ★ This loop is the whole reason the restructure happened. The driver patch cannot do
  * this work: a synchronous read to a driver deadlocks if issued from inside that driver's
@@ -155,9 +205,19 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 
         /* A short sleep so the foreground application still gets time, but short
          * enough that the ring is topped up many times a second. */
+#if CD_FACELESS
+        /* The game is the foreground application here, and it must not lose events to
+         * us. A background-only app is not offered mouse or key events anyway, so the
+         * only thing worth acting on is the quit. */
+        if (WaitNextEvent(everyEvent, &evt, 1, NULL)) {
+            if (evt.what == kHighLevelEvent) (void)AEProcessAppleEvent(&evt);
+        }
+        if (gQuitRequested) break;
+#else
         if (WaitNextEvent(mDownMask | keyDownMask, &evt, 1, NULL)) {
             if (evt.what == mouseDown || evt.what == keyDown) break;
         }
+#endif
     }
 
     {
@@ -180,7 +240,13 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     pub->pumpAlive = 0;
 }
 
-#define kVersionString  "CDPump v4"
+#if CD_FACELESS
+#define kVersionString  "CD Audio Redirector v1"
+#define kLogFileName    "\pCD Audio Redirector Log"
+#else
+#define kVersionString  "CDPump v5"
+#define kLogFileName    "\pCD Engine Log"
+#endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
 #define kEnginePEFID    128
 
@@ -269,6 +335,19 @@ int main(void)
 
     memset(&gInfo, 0, sizeof(gInfo));
 
+#if CD_FACELESS
+    /* Nobody holds a key at boot, and there is no window to hold it for. The
+     * validation the modifier used to gate still runs — the engine refuses to patch
+     * unless the descriptor validates — so what is being dropped here is the human
+     * confirmation, not the safety check. */
+    (void)km;
+    commit = true;
+    undo   = false;
+
+    /* No CDProgressOpen: with no window, every CDProgressSay below is a no-op, so the
+     * shared code needs no faceless variant. */
+    logOK = CDLogOpen(kLogFileName);
+#else
     /* ★ The default action stays the harmless one. Validation is what caught an
      * off-by-four descriptor offset and then our own code sitting in the application
      * heap — two defects that would each have corrupted or crashed the machine had the
@@ -284,12 +363,38 @@ int main(void)
     else if (commit) CDProgressSay("OPTION held: will PATCH the Control descriptor");
     else             CDProgressSay("validation only - nothing will be modified");
 
-    logOK = CDLogOpen("\pCD Engine Log");
+    logOK = CDLogOpen(kLogFileName);
+#endif
     if (!logOK) CDProgressSay("!! could not open the log - screen only");
+
+#if CD_FACELESS
+    CDLogBanner(kVersionString " - Red Book CD audio for legacy Mac CD games",
+                "FACELESS: patching automatically, no window, runs until shutdown");
+    /* After the banner, so the log always opens with one. */
+    {
+        AEEventHandlerUPP qUPP = NewAEEventHandlerUPP(HandleQuitEvent);
+        AEEventHandlerUPP oUPP = NewAEEventHandlerUPP(HandleOpenAppEvent);
+        OSErr             aerr = (qUPP == NULL)
+                               ? memFullErr
+                               : AEInstallEventHandler(kCoreEventClass,
+                                                       kAEQuitApplication,
+                                                       qUPP, 0, false);
+        OSErr             oerr = (oUPP == NULL)
+                               ? memFullErr
+                               : AEInstallEventHandler(kCoreEventClass,
+                                                       kAEOpenApplication,
+                                                       oUPP, 0, false);
+        CDLogf("  quit Apple event handler installed err=%d%s", aerr,
+               (aerr == noErr) ? ""
+                               : "  <-- shutdown may have to force-quit this");
+        CDLogf("  open-application handler installed err=%d", oerr);
+    }
+#else
     CDLogBanner(kVersionString " - resident PPC engine + one-field Control patch",
                 undo   ? "SHIFT HELD: restoring the original TVector"
                        : (commit ? "OPTION HELD: patching the Control descriptor"
                                  : "VALIDATION ONLY. Nothing is modified."));
+#endif
 
     /* --- 1. the PEF --- */
     CDLogStep("Get1Resource('cdPF', 128)");
@@ -486,10 +591,20 @@ int main(void)
 
     CDLogf("  NOTE: run this once per boot. A second run prepares a second fragment.");
     CDLogf("  NOTE: the patch NEVER survives a restart. Recovery is always a reboot.");
+#if CD_FACELESS
+    CDLogf("  NOTE: reaching this line means the pump loop ended, which for a faceless");
+    CDLogf("    build means a quit Apple event - normally shutdown. If it appears while");
+    CDLogf("    the machine is still running, something quit us and audio is now dead.");
+#endif
     CDLogf("=== end of run ===");
 
 done:
     CDLogClose();
+#if !CD_FACELESS
+    /* Hold the summary on screen long enough to be read, or until dismissed. There is
+     * no screen in the faceless build and nobody is watching it at boot, so it exits
+     * straight away — a ten-second pause during startup would be a mystery, not a
+     * courtesy. */
     CDProgressSay("done - send 'CD Engine Log' back");
     {
         EventRecord evt;
@@ -498,5 +613,6 @@ done:
             if (WaitNextEvent(mDownMask | keyDownMask, &evt, 5, NULL)) break;
     }
     CDProgressClose();
+#endif
     return 0;
 }

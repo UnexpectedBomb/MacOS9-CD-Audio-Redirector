@@ -361,10 +361,43 @@ static Boolean SameDisc(const CDTOC *x, const CDTOC *y)
  * at the start of every piece of music. The summary below is what reaches the log,
  * and the full table is printed whenever the disc actually changes — which is the
  * event worth having on the record. */
+/* ★ Re-find the drive number, for the same reason as the TOC.
+ *
+ * The empty-drive boot exposed this: with no disc in the tray the CD has no drive
+ * queue entry, so the pump starts with driveNum = 0 and passes that as ioVRefNum on
+ * every PBRead. It WORKED on this hardware, because the read is driver-level and
+ * ioRefNum is what selects the driver — but that is now the DEFAULT configuration
+ * rather than an edge case, and it rests on this particular driver ignoring
+ * ioVRefNum. Another drive need not be so forgiving, and the machine that matters is
+ * not this one. Refreshing it costs a walk of the drive queue. */
+static void RefreshDriveNumber(void)
+{
+    CDDriverInfo info;
+    int          i;
+
+    if (gDriveNum != 0) return;      /* already known, and the queue cannot renumber it */
+
+    for (i = 0; i < (int)sizeof(info); i++) ((char *)&info)[i] = 0;
+    info.refNum   = gRefNum;
+    info.driveNum = 0;
+
+    CDLogSetQuiet(true);
+    CDFindDriveNumber(&info);
+    CDLogSetQuiet(false);
+
+    if (info.driveNum != 0) {
+        gDriveNum = info.driveNum;
+        CDLogf("  pump: drive number resolved to %d (it was 0 at launch, when the "
+               "tray was empty)", gDriveNum);
+    }
+}
+
 static void EnsureTOC(void)
 {
     Boolean retake   = gBlockSizeTaken;
     Boolean hadValid = gTOC.valid;
+
+    RefreshDriveNumber();
 
     /* Read at the drive's normal block size. ReadTOC is a Control call and ought to
      * be independent of it, but every TOC read that has ever succeeded on this

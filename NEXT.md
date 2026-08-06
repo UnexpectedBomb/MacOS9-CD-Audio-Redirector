@@ -14,8 +14,9 @@ The mechanism is **complete**. What remains is packaging and validation against 
 
 | Artifact | What it is |
 |---|---|
-| **`CDPump_v4`** | The whole fix: patches the driver, then stays running as the audio pump. Re-reads the TOC per play, so a disc inserted after launch works |
-| `CDPump_v3` | The previous build, kept on the share as the known-good control |
+| **`CDAudioRedirector_v1`** | ★ **The shipping artifact.** Same code as CDPump, faceless: drops into Startup Items, patches with no key held, opens no window, runs until shutdown. Log: `CD Audio Redirector Log` |
+| **`CDPump_v5`** | The diagnostic build of the same source. Progress window, needs option to patch, stops on a click. Log: `CD Engine Log` |
+| `CDPump_v4` | Previous build, kept on the share as the known-good control |
 | `CDPlayProbe_v3` | Stands in for a game — issues the legacy audio calls, asks if you heard music |
 | `CDTraceRead_v1` | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
@@ -24,13 +25,19 @@ The mechanism is **complete**. What remains is packaging and validation against 
 
 ## How to run it
 
-1. Reboot **with the drive empty** — that is the faceless-boot case the TOC re-read exists for.
-2. Launch **`CDPump_v4` holding option** — patches, then stays running. **Leave it open.**
-   Expect `no TOC at startup (empty drive?) - will re-read on the first play request`.
-3. **Now** insert an audio CD.
-4. Run **`CDPlayProbe_v3`**. Expect music, `pump: TOC generation 1` with the full track table,
-   `the CD Audio Redirector IS resident`, and `reported status CHANGED`.
-5. Click in the pump window to stop it. `CDTraceRead_v1` shows the trace.
+**The shipping artifact** (`CDAudioRedirector_v1`) — this is now the primary path:
+
+1. Put it in `System Folder:Startup Items:`. Reboot **with the drive empty**.
+   Nothing visible should happen; it must not appear in the Application menu.
+2. Insert an audio CD.
+3. Run **`CDPlayProbe_v3`**. Expect music and `the CD Audio Redirector IS resident`.
+4. Evidence is `CD Audio Redirector Log` in the System Folder.
+
+**The diagnostic build** (`CDPump_v5`), when you want the window and manual control:
+
+1. Reboot with the drive empty. 2. Launch it **holding option** and leave it open.
+3. Insert an audio CD. 4. Run `CDPlayProbe_v3`. 5. Click the pump window to stop;
+`CDTraceRead_v1` shows the trace. Evidence is `CD Engine Log`.
 
 Logs land in the System Folder: `CD Engine Log`, `CD Play Probe Log`, `CD Trace Log`.
 They **append** — read from the last banner.
@@ -65,26 +72,43 @@ startup TOC read failed cleanly with `err=-65` (no hang), the pump ran anyway, a
 play request logged `TOC generation 1` with the full table and played. Two plays produced
 exactly one generation line, so the change suppression works.
 
-**Fold into the packaging build (step 1), both found by that run:**
-- `EnsureTOC` should also refresh **`gDriveNum`**. With an empty tray the CD is absent from
-  the drive queue, so the pump starts with `drive=0` and uses it as `ioVRefNum` on every
-  `PBRead`. It worked here because the read is driver-level and `ioRefNum` selects the driver,
-  but that is now the *default* shipping configuration and it assumes the driver ignores
-  `ioVRefNum`. Another drive may not.
-- The `discovery stage 2 SKIPPED (shift held)` message is wrong — the call site hardcodes
-  `allowFullSweep = false` (`cd_engine_install.c:474`). Say what the code did.
+**Both follow-ups from that run are now folded in** (in `CDPump_v5` / `CDAudioRedirector_v1`):
+- `EnsureTOC` now calls `RefreshDriveNumber()`, which re-walks the drive queue while
+  `gDriveNum` is still 0. With an empty tray the CD has no queue entry, so the pump used to
+  start with `drive=0` and pass it as `ioVRefNum` on every `PBRead`. It worked here because
+  the read is driver-level and `ioRefNum` selects the driver — but that is now the *default*
+  shipping configuration, and it assumed this driver ignores `ioVRefNum`. Another drive need
+  not be so forgiving.
+- The `discovery stage 2 SKIPPED (shift held)` message now says what the code actually did.
 - Do not assume the CD driver's refNum: it was −66 one boot and −56 the next.
 
-### 1. Faceless Startup-Items packaging  *(packaging, no new mechanism)*
-Ship as one file the user drops into Startup Items. Hide it from the Application menu with
-SIZE flags `modeCanBackground|modeOnlyBackground|modeHighLevelEventAware` = **0x14C0**, the
-shape the USB2 work settled on. It must patch without the option key in that mode, and it
-must not open a window.
+### 1. ✅ Faceless Startup-Items packaging — BUILT as `CDAudioRedirector_v1`, awaiting hardware
+One source, two targets, selected by `CD_FACELESS`. Building the shipping artifact from the
+same file as the tested one is deliberate: a parallel copy of an installer is exactly how the
+thing that ships stops being the thing that was tested.
+
+What the faceless build changes, and nothing else: no progress window, no modifier key
+required, quit and open-application Apple events handled, and the pump loop ends only on
+quit rather than on a click.
+
+**SIZE flags are verified, not asserted.** A Rez `SIZE` resource is sixteen anonymous
+booleans in a fixed order; naming one out of place sets a different flag silently.
+`scripts/check-size-flags.sh` reads the word back out of the built binary and fails the build
+unless it is exactly **0x14C0** (`canBackground | onlyBackground | is32BitCompatible |
+isHighLevelEventAware`). Negative control: the interactive build assembles to 0x58C0, and the
+check correctly rejects it.
 
 ⚠ It **cannot** become a real INIT. Three independent reasons, all established:
 an INIT has no ongoing task-level context; the audio must run outside any driver Control
 call (the deadlock); and an INIT patches too early to find the real ATAPI driver. A faceless
 app gives the identical user experience — one file, one restart, invisible.
+
+⚠ **The open question this build cannot answer without hardware:** whether a background-only
+app gets enough time to keep the ring fed while a *game* holds the foreground. Every run so
+far had the pump in the background behind `CDPlayProbe`, which sleeps generously, and it
+recorded zero underruns. A full-screen game may be greedier. The underrun counter in the log
+is the measurement; if it climbs, the dials are a bigger ring first, then larger reads per
+refill.
 
 ### 2. Multi-track and looping behaviour
 **Repeat play is DONE and PASSED** (2026-08-06b, three plays against one live pump: cursor

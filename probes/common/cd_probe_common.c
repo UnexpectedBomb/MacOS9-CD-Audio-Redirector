@@ -83,15 +83,17 @@ void CDProgressSay(const char *fmt, ...)
     va_list ap;
     int     n;
 
-    if (gQuietDepth > 0) return;
+    /* Both checks BEFORE the formatting, not after. The faceless build never opens the
+     * window, so every CDProgressSay in the pump loop lands here — including the
+     * per-refill "playing: N KB" line. Formatting a string to throw it away is not
+     * something the play path should be doing. */
+    if (gQuietDepth > 0 || gProgWin == NULL) return;
 
     va_start(ap, fmt);
     n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if (n < 0) n = 0;
     if (n > 255) n = 255;
-
-    if (gProgWin == NULL) return;
 
     if (gProgCount == kProgLines) {
         short i;
@@ -532,8 +534,14 @@ void CDFindDriver(CDDriverInfo *info, Boolean allowFullSweep)
             }
         }
     } else if (!info->found) {
-        CDLogf("--- discovery stage 2 SKIPPED (shift held) ---");
-        CDProgressSay("stage 2 skipped (shift held)");
+        /* Say what the code did, not why it once did it. This used to read
+         * "(shift held)", which was true only of the probes: the pump's call site
+         * passes allowFullSweep = false unconditionally, so on the empty-drive boot
+         * the log blamed a key that nobody had touched. Third stale interpretation
+         * line in this project — see NEXT.md. */
+        CDLogf("--- discovery stage 2 SKIPPED (caller did not allow the full "
+               "unit-table sweep) ---");
+        CDProgressSay("stage 2 skipped (sweep not allowed)");
     }
 
     if (!info->found) {
