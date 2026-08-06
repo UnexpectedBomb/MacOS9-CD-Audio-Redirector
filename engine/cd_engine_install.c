@@ -180,7 +180,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     pub->pumpAlive = 0;
 }
 
-#define kVersionString  "CDPump v2"
+#define kVersionString  "CDPump v3"
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
 #define kEnginePEFID    128
 

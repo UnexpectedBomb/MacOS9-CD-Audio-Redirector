@@ -227,7 +227,8 @@ typedef struct {
      * The handler only reads these, with plain aligned loads, so it stays safe at
      * any interrupt level. `posSeq` is bumped last by the pump; the handler does not
      * need it, but a reader can use it to tell a live cursor from a stale one. */
-    volatile short  playState;      /* 0 stopped, 1 playing, 2 paused           */
+    volatile short  playState;      /* 0 stopped, 1 playing, 2 paused,           */
+                                    /* 3 completed (hold the final position)     */
     volatile short  curTrack;       /* binary track number                      */
     volatile long   curAbsFrame;    /* absolute frame = LBA + 150               */
     volatile long   curRelFrame;    /* frames since the start of the track      */

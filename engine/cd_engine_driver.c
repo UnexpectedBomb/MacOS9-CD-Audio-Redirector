@@ -179,7 +179,9 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
                     for (i = 0; i < 16; i++) gPub->origStatusParam[i] = cp[i];
                     gPub->origStatusCaptured = 1;
                 }
-                cp[0] = (state == 2) ? kSynthStatusPaused : kSynthStatusPlaying;
+                cp[0] = (state == 2) ? kSynthStatusPaused
+                      : (state == 3) ? kSynthStatusCompleted
+                                     : kSynthStatusPlaying;
                 cp[3] = kBinToBCD((absF / 75) / 60);
                 cp[4] = kBinToBCD((absF / 75) % 60);
                 cp[5] = kBinToBCD(absF % 75);

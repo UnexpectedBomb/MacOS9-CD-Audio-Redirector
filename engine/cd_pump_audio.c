@@ -89,8 +89,17 @@ static void PublishCursor(void)
 
     if (gPub == NULL) return;
 
+    /* ★ When a track finishes naturally, HOLD the final position and report
+     * "completed" rather than falling back to playState 0.
+     *
+     * Reverting to 0 would stop synthesis, and the driver's own answer is a stale
+     * position from whenever it was last touched — on this machine, a leftover from an
+     * earlier iTunes session, in a different track entirely. A game polling for track
+     * end would see the position jump backwards to nonsense instead of arriving at the
+     * track boundary. A real drive holds the end position and reports completion, so
+     * that is what we report. Only an explicit AudioStop returns to 0. */
     if (!gPlaying) {
-        gPub->playState = 0;
+        if (gPub->playState == 1 || gPub->playState == 2) gPub->playState = 3;
         gPub->posSeq++;
         return;
     }
@@ -262,7 +271,8 @@ void CDPumpStop(void)
     gPlaying = false;
     gPaused  = false;
     GiveBackBlockSize();
-    PublishCursor();          /* playState 0, so the handler stops synthesising */
+    /* An explicit stop really does mean stopped: back to the driver's own answers. */
+    if (gPub != NULL) { gPub->playState = 0; gPub->posSeq++; }
 }
 
 /* Resolve a transport request's csParam into an LBA range using the TOC. Both the MSF
@@ -388,8 +398,12 @@ void CDPumpIdle(void)
     if (!gPlaying || gPaused) return;
 
     if (gNextLBA >= gEndLBA && (gWriteOff - gReadOff) <= 0) {
-        CDLogf("  pump: reached the end of the range; stopping");
-        CDPumpStop();
+        CDLogf("  pump: reached the end of the range; holding the final position "
+               "and reporting completed");
+        gPlaying = false;
+        gPaused  = false;
+        GiveBackBlockSize();
+        PublishCursor();            /* -> playState 3, position held */
         return;
     }
     while (guard-- > 0)

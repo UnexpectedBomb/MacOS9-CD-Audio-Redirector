@@ -1360,3 +1360,70 @@ answers pass through untouched.
 - ★ And in `CDPlayProbe`'s own log, the line that has said `reported status did NOT change`
   in every run so far should finally say the position **CHANGED** — the probe polls for 10
   seconds, so a moving cursor is exactly what it is built to detect.
+
+## Step 5c run 1 — SYNTHESIS WORKS, and the numbers verify to the frame
+
+```
+CDPlayProbe:  ⇒ reported status CHANGED over 10 s
+              user reported: MUSIC WAS AUDIBLE
+  first AudioStatus: 00 00 00 07 18 68     ← the driver's stale answer
+  last  AudioStatus: 11 00 00 00 12 00     ← ours
+```
+
+Byte 0 is `0x11` (our play-in-progress marker) and the MSF decodes to **00:12:00**. From
+LBA 0 that is absolute frame 900, i.e. 750 frames = **exactly 10.0 s of audio delivered** —
+the probe's poll window, to the frame. Red Book puts LBA 0 at 00:02:00, so LBA 750 is
+00:12:00. Independently: `gReadOff` advances 44,100 bytes per callback, and 1,764,000 /
+44,100 = 40 callbacks = 40 × 0.25 s = 10.0 s. **The cursor is not merely moving, it is
+correct.**
+
+### The captured originals settle byte 0 and re-validate the layout
+
+```
+ORIGINAL AudioStatus: 00 00 00 07 18 68
+ORIGINAL ReadQ:       00 02 01 03 40 38 07 18 68
+```
+
+- **AudioStatus byte 0 = 0x00 when nothing is playing.** So reporting `0x11` for playing
+  does not collide with anything the driver itself uses. The guess is now evidence-backed
+  as *consistent*, though not yet confirmed against a game.
+- **The ReadQ arithmetic closes again, on a different position.** abs 07:18:68 = frame
+  32918 → LBA 32768; rel 03:40:38 = 16538 frames; difference = **LBA 16230, exactly track
+  2's start on this disc**. Our layout understanding is right for the second time, at a
+  different point on a different disc.
+
+## Two fixes made straight away, one of them my own regression
+
+### 1. The probe's discriminator was wrong AGAIN — and this time I broke it myself
+
+I had "fixed" it last run to read: position moved ⇒ analog path, position frozen ⇒ the
+redirector is working. **Synthesis inverts that**, because the redirector now deliberately
+makes the position advance. "Moved" is consistent with both.
+
+There is no way to tell from the position at all any more, so the probe now **asks the
+redirector directly** via `Gestalt('CDau')` and reports `patched`, `pumpAlive`, `pumpPlaying`
+and the underrun count. Resident ⇒ the music and the movement are both ours; not resident ⇒
+the unpatched baseline, where music could only be the analog path. Definitive rather than
+inferred, and it makes the log self-explanatory for a third party.
+
+*Lesson worth keeping: a diagnostic's interpretation text is not write-once. Each time the
+system under test gains a capability, every "therefore" in the tooling has to be re-checked
+— this one went stale twice in three runs.*
+
+### 2. End of track now holds the final position instead of reverting to a stale one
+
+Previously, finishing a track set `playState = 0`, which stopped synthesis and let the
+driver's own answer through — a position left over from an earlier iTunes session, **in a
+different track entirely**. A game polling for track end would have seen the position jump
+backwards to nonsense rather than arriving at the boundary.
+
+Now natural completion moves to `playState = 3`: the final position is held and the status
+byte reports completed (`0x13`), which is what a real drive does. Only an explicit
+`AudioStop` returns to the driver's own answers.
+
+## State: the mechanism is complete
+
+`CDPump_v3` + `CDPlayProbe_v3`. Everything the fix needs to do, it now does: catch the
+legacy call, play the audio digitally, and report a truthful advancing position with a
+sane end-of-track. What remains is packaging and validation against a real game, not
+mechanism.

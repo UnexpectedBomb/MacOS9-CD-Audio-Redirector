@@ -66,6 +66,7 @@
 #include <OSUtils.h>
 #include <ToolUtils.h>
 #include <Timer.h>
+#include <Gestalt.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -73,7 +74,7 @@
 #include "cd_probe_common.h"
 #include "cd_cscodes.h"
 
-#define kVersionString  "CDPlayProbe v2"
+#define kVersionString  "CDPlayProbe v3"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -539,19 +540,40 @@ int main(void)
         CDLogf("  ⇒ H1 CONFIRMED: the driver accepts the legacy audio calls but "
                "there is no route to the speakers. Interception + DAE is the "
                "right design.");
+    /* ★ Ask the redirector directly. Judging by the transport position no longer
+     * works: before synthesis existed, a frozen position meant the redirector was
+     * doing the playing, but now the redirector deliberately makes the position ADVANCE
+     * — so "moved" is consistent with both the analog path and with us. The only
+     * definitive answer is to ask whether the redirector is installed and playing. */
+    {
+        long  gv = 0;
+        if (Gestalt(FOUR_CHAR_CODE('CDau'), &gv) == noErr && gv != 0) {
+            struct { OSType magic; short version; short patched; short cdRefNum;
+                     short r0; Ptr o; Ptr u; Ptr ring; long re; long wc;
+                     long cc; long ac; long rs; short rcs; short rr;
+                     unsigned char rp[16]; short pa; short pp; long pu; } *pub =
+                (void *)gv;
+            CDLogf("--- the CD Audio Redirector IS resident ---");
+            CDLogf("  patched=%d  pumpAlive=%d  pumpPlaying=%d  underruns=%ld",
+                   pub->patched, pub->pa, pub->pp, pub->pu);
+            CDLogf("  ⇒ any music heard came from the redirector's digital path, and");
+            CDLogf("    any moving position was synthesised by it. This is the fixed");
+            CDLogf("    machine, not the analog control case.");
+        } else {
+            CDLogf("--- the CD Audio Redirector is NOT resident ---");
+            CDLogf("  ⇒ this run is the unpatched baseline: music, if any, can only");
+            CDLogf("    have come from a working analog CD-audio path.");
+        }
+    }
+
     if (gP.playErr == noErr && answer == 1) {
         CDLogf("  ⇒ MUSIC WAS AUDIBLE. Two very different causes, and the transport");
         CDLogf("    position above distinguishes them:");
-        CDLogf("      position MOVED   ⇒ the drive is really transporting, so this Mac");
-        CDLogf("                         has a working analog CD-audio path (the");
-        CDLogf("                         known-good control case, e.g. the MDD).");
-        CDLogf("      position FROZEN  ⇒ the drive is NOT transporting, so the sound");
-        CDLogf("                         cannot be coming from it. On the G4 mini that");
-        CDLogf("                         means the CD Audio Redirector is working:");
-        CDLogf("                         our patch caught AudioPlay and the pump is");
-        CDLogf("                         streaming the track digitally.");
-        CDLogf("    (This probe predates the redirector; before it existed, audible");
-        CDLogf("     music could only have meant the analog path.)");
+        CDLogf("    position lines above are NOT the discriminator any more — the");
+        CDLogf("    redirector synthesises a moving position on purpose. Use the");
+        CDLogf("    'IS/is NOT resident' block above instead: resident means the");
+        CDLogf("    music and the movement are both ours; not resident means a");
+        CDLogf("    working analog path (the MDD control case).");
     }
     if (gP.playErr != noErr)
         CDLogf("  ⇒ H2: playback was never accepted, so audibility says nothing.");
