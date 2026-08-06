@@ -64,11 +64,26 @@ void CDProgressOpen(ConstStr255Param title)
     ProgRedraw();
 }
 
+/* Quiet nesting depth. 0 = normal. Shared by the log and the progress window so a
+ * quiet region is genuinely silent rather than silent-on-disc but chatty on screen. */
+static short gQuietDepth = 0;
+
+void CDLogSetQuiet(Boolean quiet)
+{
+    if (quiet) {
+        gQuietDepth++;
+    } else if (gQuietDepth > 0) {
+        gQuietDepth--;
+    }
+}
+
 void CDProgressSay(const char *fmt, ...)
 {
     char    buf[256];
     va_list ap;
     int     n;
+
+    if (gQuietDepth > 0) return;
 
     va_start(ap, fmt);
     n = vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -152,7 +167,7 @@ void CDLogf(const char *fmt, ...)
     long    len;
     int     n;
 
-    if (gLogRef == 0) return;
+    if (gLogRef == 0 || gQuietDepth > 0) return;
 
     va_start(ap, fmt);
     n = vsnprintf(buf, sizeof(buf) - 2, fmt, ap);   /* bounded, always */
@@ -187,6 +202,8 @@ void CDLogHexAt(const char *tag, const void *p, long n, long baseOff)
     const unsigned char *b = (const unsigned char *)p;
     char  line[128];
     long  i, off = 0;
+
+    if (gQuietDepth > 0) return;    /* skip the formatting too, not just the write */
 
     while (off < n) {
         long chunk = n - off;

@@ -14,7 +14,8 @@ The mechanism is **complete**. What remains is packaging and validation against 
 
 | Artifact | What it is |
 |---|---|
-| **`CDPump_v3`** | The whole fix: patches the driver, then stays running as the audio pump |
+| **`CDPump_v4`** | The whole fix: patches the driver, then stays running as the audio pump. Re-reads the TOC per play, so a disc inserted after launch works |
+| `CDPump_v3` | The previous build, kept on the share as the known-good control |
 | `CDPlayProbe_v3` | Stands in for a game — issues the legacy audio calls, asks if you heard music |
 | `CDTraceRead_v1` | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
@@ -23,11 +24,13 @@ The mechanism is **complete**. What remains is packaging and validation against 
 
 ## How to run it
 
-1. Reboot. Confirm iTunes reads an audio CD (the baseline).
-2. Launch **`CDPump_v3` holding option** — patches, then stays running. **Leave it open.**
-3. Run **`CDPlayProbe_v3`**. Expect music, and a log saying
-   `the CD Audio Redirector IS resident` plus `reported status CHANGED`.
-4. Click in the pump window to stop it. `CDTraceRead_v1` shows the trace.
+1. Reboot **with the drive empty** — that is the faceless-boot case the TOC re-read exists for.
+2. Launch **`CDPump_v4` holding option** — patches, then stays running. **Leave it open.**
+   Expect `no TOC at startup (empty drive?) - will re-read on the first play request`.
+3. **Now** insert an audio CD.
+4. Run **`CDPlayProbe_v3`**. Expect music, `pump: TOC generation 1` with the full track table,
+   `the CD Audio Redirector IS resident`, and `reported status CHANGED`.
+5. Click in the pump window to stop it. `CDTraceRead_v1` shows the trace.
 
 Logs land in the System Folder: `CD Engine Log`, `CD Play Probe Log`, `CD Trace Log`.
 They **append** — read from the last banner.
@@ -36,15 +39,29 @@ They **append** — read from the last banner.
 
 ## Next steps, in order
 
-### 0. ⚠ Re-read the TOC on demand  *(blocks step 1 — do this first)*
-`CDPumpInit` reads the TOC **once**, at launch, and nothing re-reads it
-([cd_pump_audio.c:189](engine/cd_pump_audio.c:189)); `DecodePos` resolves every request
-against that snapshot. A faceless Startup-Items app launches at boot with an **empty drive**,
-so `gTOC.valid` is false for the whole session and no request can ever resolve. Re-read
-inside `CDPumpPlay` when the TOC is invalid or the disc may have changed.
+### 0. ✅ Re-read the TOC on demand — DONE in `CDPump_v4`, awaiting hardware
+`CDPumpInit` used to read the TOC once and never again, so a faceless Startup-Items app
+launching at boot with an **empty drive** would have had `gTOC.valid` false for the whole
+session and could never have resolved a request.
 
-Until this is fixed, every hardware run must put the disc in the drive **before** launching
-the pump, and must not swap discs afterwards: one disc per boot.
+`CDPumpPlay` now calls `EnsureTOC()` before resolving anything. It re-reads on **every** play
+request rather than trying to detect a disc change: the read is three Control calls and
+measured one tick, against a play path costing 1.5 s, so a staleness heuristic would be more
+code and more ways to be wrong to save 0.7% of the budget. The read runs under
+`CDLogSetQuiet` (new, in `cd_probe_common`) so it does not append ~40 lines and as many
+flushed `FSWrite`s to the start of every piece of music; the full track table is logged only
+when the disc actually **changes**, tagged `TOC generation N`.
+
+Two deliberate choices, both to avoid making things worse than they were:
+- a failed re-read **keeps** a TOC already in hand, so a transient glitch cannot turn a
+  playing disc into an unresolvable request;
+- the block size is restored around the read and retaken afterwards. `ReadTOC` is a Control
+  call and ought not to care, but every TOC read that has succeeded on this hardware happened
+  at 512, and two Control calls are cheap insurance. On the first play nothing is taken, so
+  it costs nothing.
+
+**Not yet run on hardware.** The run that validates it is the empty-drive boot in
+"How to run it" above.
 
 ### 1. Faceless Startup-Items packaging  *(packaging, no new mechanism)*
 Ship as one file the user drops into Startup Items. Hide it from the Application menu with
@@ -106,8 +123,12 @@ ask every time. No em-dashes in anything published externally.
 - **A diagnostic's interpretation text goes stale.** `CDPlayProbe`'s "therefore" line was
   wrong twice in three runs as the system gained capabilities. Re-check the tooling's
   conclusions whenever behaviour changes.
-- **The pump's TOC is a snapshot taken at launch.** Disc in the drive first, no swaps.
-  See step 0 — this is also a shipping blocker.
+- **A build script that hardcodes the artifact version will silently ship a stale binary.**
+  `engine/scripts/push-to-pi.sh` had `BASES="CDPump_v3"`; when the target became v4 it
+  re-pushed the v3 still sitting in the build directory and printed a success line. It now
+  takes the name from CMake and fails loudly if nothing was copied. **The four probe push
+  scripts still hardcode their names** — latent, since those versions have not moved, but the
+  same trap is armed. Fix them when any of those artifacts next changes version.
 
 ## Numbers worth knowing
 

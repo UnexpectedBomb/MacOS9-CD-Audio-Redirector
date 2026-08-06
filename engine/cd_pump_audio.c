@@ -63,6 +63,12 @@ static Boolean            gBlockSizeTaken = false;
 
 static CDTOC              gTOC;
 
+/* Scratch for the re-read, static rather than a local: a CDTOC carries a
+ * 100-entry track table, and ~1.6 KB of stack inside the play path is not worth
+ * the risk when the pump is single-threaded and task-level throughout. */
+static CDTOC              gTOCScratch;
+static long               gTOCGeneration = 0;   /* bumped whenever the disc changes */
+
 /* Which track we are inside, so the cursor can report a track-relative position. */
 static short              gCurTrack      = 1;
 static long               gTrackStartLBA = 0;
@@ -186,8 +192,14 @@ OSErr CDPumpInit(short refNum, short driveNum)
     SetZone(saveZone);
     if (gChan == NULL) return memFullErr;
 
+    /* An opening read, so a pump started with a disc already in the drive has the
+     * TOC on the record at install time. It is no longer load-bearing: every play
+     * request re-reads (see EnsureTOC), which is what lets the faceless build start
+     * at boot with an empty tray and still work when a disc turns up later. */
     CDReadTOC(refNum, &gTOC);
-    if (!gTOC.valid) CDLogf("  pump: TOC unreadable; requests cannot be resolved");
+    if (!gTOC.valid)
+        CDLogf("  pump: no TOC at startup (empty drive?) - will re-read on the "
+               "first play request");
 
     return noErr;
 }
@@ -307,6 +319,94 @@ static Boolean DecodePos(const unsigned char *cp, long *startLBA, long *endLBA)
     return true;
 }
 
+/* Do the two TOCs describe the same disc? Field by field rather than a block
+ * compare, because a struct comparison also compares padding, and the answer
+ * decides whether the log gets forty lines or none. Track number, audio-vs-data
+ * and start address are what DecodePos actually consumes. */
+static Boolean SameDisc(const CDTOC *x, const CDTOC *y)
+{
+    short i;
+
+    if (x->valid      != y->valid)      return false;
+    if (x->firstTrack != y->firstTrack) return false;
+    if (x->lastTrack  != y->lastTrack)  return false;
+    if (x->trackCount != y->trackCount) return false;
+    if (x->audioCount != y->audioCount) return false;
+
+    for (i = 0; i < x->trackCount; i++) {
+        if (x->track[i].number != y->track[i].number) return false;
+        if (x->track[i].isData != y->track[i].isData) return false;
+        if (x->track[i].lba    != y->track[i].lba)    return false;
+    }
+    return true;
+}
+
+/* ★ Re-read the TOC before resolving a request.
+ *
+ * WHY THIS EXISTS: the TOC used to be read exactly once, inside CDPumpInit. That
+ * was survivable while the pump was a foreground app launched by hand with a disc
+ * already in the drive, and fatal the moment it becomes the faceless Startup-Items
+ * item it has to ship as — that launches at boot with an EMPTY drive, so the TOC
+ * read fails, gTOC.valid stays false for the rest of the session, and every request
+ * a game ever makes goes unresolved. The symptom would have been an extension that
+ * installs perfectly and simply never plays anything, which is the worst possible
+ * thing to hand to someone else to test.
+ *
+ * Re-reading on every play request rather than trying to detect a disc change: the
+ * TOC read is three Control calls and measured one tick on this hardware, against a
+ * play path whose measured cost is 1.5 seconds. A staleness heuristic would be more
+ * code and more ways to be wrong, to save 0.7% of the budget.
+ *
+ * Quiet, because at full verbosity this is ~40 lines and as many flushed FSWrites
+ * at the start of every piece of music. The summary below is what reaches the log,
+ * and the full table is printed whenever the disc actually changes — which is the
+ * event worth having on the record. */
+static void EnsureTOC(void)
+{
+    Boolean retake   = gBlockSizeTaken;
+    Boolean hadValid = gTOC.valid;
+
+    /* Read at the drive's normal block size. ReadTOC is a Control call and ought to
+     * be independent of it, but every TOC read that has ever succeeded on this
+     * hardware happened at 512, and two extra Control calls are cheap insurance on a
+     * machine with no debugger. On the first play nothing is taken, so this is free. */
+    if (retake) GiveBackBlockSize();
+
+    CDLogSetQuiet(true);
+    CDReadTOC(gRefNum, &gTOCScratch);
+    CDLogSetQuiet(false);
+
+    if (retake) TakeBlockSize();
+
+    if (!gTOCScratch.valid) {
+        /* Keep a TOC we already trust: a transient read failure must not throw away
+         * a good one and turn a playing disc into an unresolvable request. */
+        CDLogf(hadValid
+               ? "  pump: TOC re-read failed; keeping the TOC already in hand"
+               : "  pump: no readable TOC (empty drive, or a disc without one)");
+        return;
+    }
+
+    if (hadValid && SameDisc(&gTOC, &gTOCScratch)) return;   /* same disc, say nothing */
+
+    gTOC = gTOCScratch;
+    gTOCGeneration++;
+    CDLogf("  pump: TOC generation %ld - %d track(s), %d audio, first=%d last=%d",
+           gTOCGeneration, gTOC.trackCount, gTOC.audioCount,
+           gTOC.firstTrack, gTOC.lastTrack);
+    {
+        short i;
+        for (i = 0; i < gTOC.trackCount; i++)
+            CDLogf("    track %2d: %s  %02d:%02d:%02d  lba=%ld",
+                   gTOC.track[i].number,
+                   gTOC.track[i].isData ? "DATA " : "AUDIO",
+                   gTOC.track[i].m, gTOC.track[i].s, gTOC.track[i].f,
+                   gTOC.track[i].lba);
+    }
+    if (gTOC.audioCount == 0)
+        CDLogf("    ⇒ no audio tracks on this disc; audio requests cannot be served");
+}
+
 OSErr CDPumpPlay(const unsigned char *csParam)
 {
     SndDoubleBufferHeader2 h;
@@ -315,6 +415,11 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     int   i;
 
     if (gChan == NULL || gPCM == NULL) return notOpenErr;
+
+    /* Before resolving anything: the disc may have been inserted or swapped since
+     * the pump started. */
+    EnsureTOC();
+
     if (!DecodePos(csParam, &a, &b)) {
         CDLogf("  pump: could not resolve the requested position");
         return paramErr;

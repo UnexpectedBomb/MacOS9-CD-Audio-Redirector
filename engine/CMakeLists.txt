@@ -12,7 +12,7 @@ project(CDEngine C)
 # Two products:
 #   cd_engine.pef      the resident engine, shaped as a native driver so
 #                      GetDriverMemoryFragment accepts it
-#   CDPump_v3 a PPC app that embeds that PEF, holds its closure, and calls
+#   CDPump_v4 a PPC app that embeds that PEF, holds its closure, and calls
 #                      its DoDriverIO to validate
 #
 # The 68K generation (patch/) is retired: a 68K DRVR shell plus tail jump worked on the
@@ -48,7 +48,7 @@ add_custom_command(OUTPUT engine_pef.r
     DEPENDS cd_engine.pef ${CMAKE_CURRENT_SOURCE_DIR}/embed-pef.sh)
 
 # --- the installer app ---
-add_application(CDPump_v3
+add_application(CDPump_v4
     cd_engine_install.c
     cd_pump_audio.c
     ../probes/common/cd_probe_common.c
@@ -56,32 +56,32 @@ add_application(CDPump_v3
     ${CMAKE_CURRENT_BINARY_DIR}/engine_pef.r
     TYPE     "APPL"
     CREATOR  "CDei")
-target_include_directories(CDPump_v3 PRIVATE
+target_include_directories(CDPump_v4 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../probes/common)
 # DriverLoaderLib supplies GetDriverMemoryFragment / SetDriverClosureMemory.
-target_link_libraries(CDPump_v3 DriverLoaderLib InterfaceLib)
+target_link_libraries(CDPump_v4 DriverLoaderLib InterfaceLib)
 
 if(TARGET retrocrt)
     add_dependencies(cd_engine retrocrt)
-    add_dependencies(CDPump_v3 retrocrt)
+    add_dependencies(CDPump_v4 retrocrt)
 endif()
 
 set(WRAP_APM $ENV{HOME}/Developer/claude-os9/client/scripts/wrap-apm.py)
 add_custom_command(
-    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v3.img
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v4.img
     COMMAND /usr/bin/env python3 ${WRAP_APM}
-            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v3.dsk
-            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v3.img
-            CDPump_v3
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v3.dsk ${WRAP_APM}
-    COMMENT "Wrapping CDPump_v3.dsk -> .img" VERBATIM)
-add_custom_target(CDPump_v3_disk ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v3.img)
-add_dependencies(CDPump_v3_disk CDPump_v3_APPL)
+            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v4.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v4.img
+            CDPump_v4
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v4.dsk ${WRAP_APM}
+    COMMENT "Wrapping CDPump_v4.dsk -> .img" VERBATIM)
+add_custom_target(CDPump_v4_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v4.img)
+add_dependencies(CDPump_v4_disk CDPump_v4_APPL)
 
-add_custom_command(TARGET CDPump_v3_disk POST_BUILD
+add_custom_command(TARGET CDPump_v4_disk POST_BUILD
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Pushing CDPump_v3 to pi3.local" VERBATIM)
+            ${CMAKE_CURRENT_BINARY_DIR} CDPump_v4
+    COMMENT "Pushing CDPump_v4 to pi3.local" VERBATIM)

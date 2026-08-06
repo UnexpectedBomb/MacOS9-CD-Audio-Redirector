@@ -1,7 +1,7 @@
-/* cd_recon.r — resources for CDPump, the Step-2 engine residency + validation app.
+/* cd_engine_install.r — resources for CDPump: driver patch, then the audio pump.
  *
- * The summary window is created programmatically in cd_recon.c (NewWindow), so
- * the only resources needed are the memory partition and a version stamp.
+ * The progress window is created programmatically (NewWindow), so the only
+ * resources needed are the memory partition and a version stamp.
  */
 
 #include "Processes.r"
@@ -32,10 +32,10 @@ resource 'SIZE' (-1) {
 
 resource 'vers' (1, "CDPump") {
     0x00,
-    0x30,                   /* 3.0 */
+    0x40,                   /* 4.0 */
     development,
     0x01,
     verUS,
-    "5.0d1",
-    "5.0d1, CD Audio Redirector Step-2 engine residency + validation"
+    "4.0d1",
+    "4.0d1, CD Audio Redirector - driver patch and audio pump"
 };

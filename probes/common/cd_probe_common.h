@@ -78,6 +78,19 @@ void    CDLogFlush(void);
 /* Writes one line and flushes it. */
 void CDLogf(const char *fmt, ...);
 
+/* ★ Silence the log and the progress window for the duration of a call.
+ *
+ * Added for the pump, which re-reads the TOC on every play request so that a disc
+ * inserted after launch is seen. At full verbosity that would append ~40 lines and
+ * a matching number of flushed FSWrites to the start of every piece of music — on
+ * the play path, where the whole measured budget is 1.5 seconds.
+ *
+ * NESTS via a counter, so an inner quiet region does not un-mute the outer one.
+ * The caller is responsible for logging a one-line summary of what happened inside:
+ * a silent failure leaving no trace at all is exactly the bug class that has bitten
+ * this project twice (the re-opened CDLogOpen, the discarded SetGestaltValue). */
+void CDLogSetQuiet(Boolean quiet);
+
 /* Writes one line, flushes it, AND puts it on screen. Use immediately before
  * every driver call. */
 void CDLogStep(const char *fmt, ...);
