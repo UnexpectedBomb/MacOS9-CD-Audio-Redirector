@@ -57,6 +57,7 @@ extern void  CDPumpStop(void);
 extern void  CDPumpPause(Boolean pause);
 extern void  CDPumpIdle(void);
 extern void  CDPumpStats(Boolean *playing, long *underruns, long *delivered);
+extern void  CDPumpSetPublic(CDEnginePublic *pub);
 
 /* Watch the engine's mailbox and service what the game asked for. Returns when the user
  * clicks or presses a key.
@@ -74,6 +75,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     if (pub == NULL) return;
     lastSeq = pub->reqSeq;
     pub->pumpAlive = 1;
+    CDPumpSetPublic(pub);        /* so the pump can publish the playback cursor */
 
     CDLogf("=== PUMP RUNNING. Click or press a key to stop and quit. ===");
     CDProgressSay("pump running - now run CDPlayProbe_v2 and LISTEN");
@@ -124,6 +126,20 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 
         CDPumpIdle();
 
+        /* Log what the ORIGINAL driver answers for AudioStatus and ReadQ, once each.
+         * The MSF bytes we rewrite with confidence; byte 0 of AudioStatus is still a
+         * guess (kSynthStatusPlaying), and this is the evidence that settles it. */
+        if (pub->origStatusCaptured == 1) {
+            pub->origStatusCaptured = 2;
+            CDLogf("  ORIGINAL AudioStatus answer (before our rewrite):");
+            CDLogHexAt("    orig", (void *)pub->origStatusParam, 16, 0);
+        }
+        if (pub->origReadQCaptured == 1) {
+            pub->origReadQCaptured = 2;
+            CDLogf("  ORIGINAL ReadQ answer (before our rewrite):");
+            CDLogHexAt("    orig", (void *)pub->origReadQParam, 16, 0);
+        }
+
         {
             Boolean playing;
             long    ur, delivered;
@@ -150,6 +166,10 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
         CDPumpStats(&playing, &ur, &delivered);
         CDLogf("=== pump stopped: %ld KB delivered, %ld underruns ===",
                delivered / 1024, ur);
+        CDLogf("  synthesised answers: %ld AudioStatus, %ld ReadQ",
+               pub->synthStatusCount, pub->synthReadQCount);
+        if (pub->synthStatusCount == 0 && pub->synthReadQCount == 0)
+            CDLogf("  ⇒ nothing polled for position, so synthesis was never exercised.");
         if (ur == 0 && delivered > 0)
             CDLogf("  ⇒ zero underruns: the ring and the event-loop refill kept up.");
         else if (ur > 0)
@@ -160,7 +180,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     pub->pumpAlive = 0;
 }
 
-#define kVersionString  "CDPump v1"
+#define kVersionString  "CDPump v2"
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
 #define kEnginePEFID    128
 

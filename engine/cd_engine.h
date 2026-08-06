@@ -213,7 +213,51 @@ typedef struct {
     volatile short  pumpAlive;
     volatile short  pumpPlaying;
     volatile long   pumpUnderruns;
+
+    /* ---- the mailbox in reverse: the playback cursor ---------------------- *
+     * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that
+     * never moves, because it never actually transports the disc. A game that polls
+     * for track end therefore never sees one, which is exactly the community's
+     * "music never loops" symptom.
+     *
+     * So the pump publishes where playback has actually reached — derived from bytes
+     * the Sound Manager has consumed, not from what we asked for — and the handler
+     * rewrites the driver's stale answer with these values.
+     *
+     * The handler only reads these, with plain aligned loads, so it stays safe at
+     * any interrupt level. `posSeq` is bumped last by the pump; the handler does not
+     * need it, but a reader can use it to tell a live cursor from a stale one. */
+    volatile short  playState;      /* 0 stopped, 1 playing, 2 paused           */
+    volatile short  curTrack;       /* binary track number                      */
+    volatile long   curAbsFrame;    /* absolute frame = LBA + 150               */
+    volatile long   curRelFrame;    /* frames since the start of the track      */
+    volatile long   posSeq;
+
+    /* What the ORIGINAL driver answered, captured once so the pump can log it. The
+     * MSF bytes we can decode and rewrite with confidence; bytes 0..2 of AudioStatus
+     * were 0x00 in every Phase-0 sample and their encoding is still unconfirmed, so
+     * seeing the real thing matters before trusting a guess. */
+    volatile short  origStatusCaptured;
+    volatile unsigned char origStatusParam[16];
+    volatile unsigned char origReadQParam[16];
+    volatile short  origReadQCaptured;
+
+    volatile long   synthStatusCount;   /* how many answers we have rewritten   */
+    volatile long   synthReadQCount;
 } CDEnginePublic;
+
+/* AudioStatus byte 0 while we are playing.
+ *
+ * ⚠ A GUESS, and flagged as one. The MMC audio-status codes are 0x11 play-in-progress,
+ * 0x12 paused, 0x13 completed, 0x14 error, 0x15 no-status, and this driver returned
+ * 0x00 in every Phase-0 sample — which is not a valid MMC code, so either it passes
+ * something else through or 0x00 simply means "nothing playing". Reporting
+ * play-in-progress is the reading most likely to make a polling game behave, and it is
+ * a single constant to change if a game disagrees. The pump logs what the original
+ * actually returned so this can be settled with evidence. */
+#define kSynthStatusPlaying    0x11
+#define kSynthStatusPaused     0x12
+#define kSynthStatusCompleted  0x13
 
 /* The command code we invoke DoDriverIO with. We call it ourselves rather than
  * letting the Device Manager do it — the fragment is never installed into the unit

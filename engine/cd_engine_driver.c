@@ -141,6 +141,69 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
         gPub->writeCount++;
     }
 
+    /* ★ SYNTHESIS: chain first, then rewrite the answer.
+     *
+     * The last hardware run settled the question this was waiting on. CDPlayProbe polled
+     * AudioStatus and ReadQ forty times through this handler, and every one chained and
+     * came back — so a QUEUED call does return to us, and we can let the original answer
+     * and then correct it. No need to reproduce the jIODone completion protocol.
+     *
+     * We rewrite only what we can decode. ReadQ's nine bytes were cross-checked against
+     * the TOC to the exact frame in Phase 0, so all of them are rewritten. For
+     * AudioStatus only bytes 3..5 (the absolute MSF, which match ReadQ's) plus the
+     * play-state byte are touched; the rest of the original's answer is left alone.
+     *
+     * Interrupt-safe: reads of the published cursor and plain stores into csParam. */
+    if (pb != NULL && gPub != NULL && gPub->patched && gPub->playState != 0) {
+        short cs = ((CntrlParam *)pb)->csCode;
+
+        if (cs == kcsAudioStatus || cs == kcsReadTheQSubcode) {
+            unsigned char *cp = (unsigned char *)((CntrlParam *)pb)->csParam;
+            OSErr          err;
+            long           absF, relF;
+            short          trk, state;
+            int            i;
+
+            if (gOrigCtl == NULL) return controlErr;
+            err = gOrigCtl(pb, dce);          /* let the original answer first */
+
+            /* Snapshot the cursor once, so every field of one answer is consistent
+             * even if playback advances while we format it. */
+            absF  = gPub->curAbsFrame;
+            relF  = gPub->curRelFrame;
+            trk   = gPub->curTrack;
+            state = gPub->playState;
+
+            if (cs == kcsAudioStatus) {
+                if (!gPub->origStatusCaptured) {
+                    for (i = 0; i < 16; i++) gPub->origStatusParam[i] = cp[i];
+                    gPub->origStatusCaptured = 1;
+                }
+                cp[0] = (state == 2) ? kSynthStatusPaused : kSynthStatusPlaying;
+                cp[3] = kBinToBCD((absF / 75) / 60);
+                cp[4] = kBinToBCD((absF / 75) % 60);
+                cp[5] = kBinToBCD(absF % 75);
+                gPub->synthStatusCount++;
+            } else {
+                if (!gPub->origReadQCaptured) {
+                    for (i = 0; i < 16; i++) gPub->origReadQParam[i] = cp[i];
+                    gPub->origReadQCaptured = 1;
+                }
+                cp[0] = 0x00;                        /* control/adr: audio, no pre-emph */
+                cp[1] = kBinToBCD(trk);
+                cp[2] = kBinToBCD(1);                /* index 1 */
+                cp[3] = kBinToBCD((relF / 75) / 60);
+                cp[4] = kBinToBCD((relF / 75) % 60);
+                cp[5] = kBinToBCD(relF % 75);
+                cp[6] = kBinToBCD((absF / 75) / 60);
+                cp[7] = kBinToBCD((absF / 75) % 60);
+                cp[8] = kBinToBCD(absF % 75);
+                gPub->synthReadQCount++;
+            }
+            return err;
+        }
+    }
+
     /* ★ POST THE REQUEST AND CHAIN. NO I/O HERE, EVER.
      *
      * The previous version read the disc and started playback from inside this handler

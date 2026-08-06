@@ -63,6 +63,50 @@ static Boolean            gBlockSizeTaken = false;
 
 static CDTOC              gTOC;
 
+/* Which track we are inside, so the cursor can report a track-relative position. */
+static short              gCurTrack      = 1;
+static long               gTrackStartLBA = 0;
+static long               gPlayStartLBA  = 0;
+
+/* The published block, so the cursor can be handed to the handler. */
+static CDEnginePublic    *gPub = NULL;
+
+void CDPumpSetPublic(CDEnginePublic *pub) { gPub = pub; }
+
+/* ★ Publish where playback has ACTUALLY reached.
+ *
+ * Derived from gReadOff — bytes the Sound Manager has consumed — not from what was
+ * requested and not from how much has been read off the disc. That distinction is the
+ * whole point: FEASIBILITY §6 warned that a cursor taken from the wrong place gives
+ * music that never loops or loops instantly, and the only honest source is what has
+ * been handed to the speaker.
+ *
+ * 2352 bytes = one CD frame, so bytes/2352 is frames played. Absolute frame numbering
+ * is LBA + 150 (the lead-in), matching what ReadQ reported on hardware. */
+static void PublishCursor(void)
+{
+    long framesPlayed, absF, relF;
+
+    if (gPub == NULL) return;
+
+    if (!gPlaying) {
+        gPub->playState = 0;
+        gPub->posSeq++;
+        return;
+    }
+
+    framesPlayed = gReadOff / kCDDASectorBytes;
+    absF = gPlayStartLBA + framesPlayed + kCDDALeadInSectors;
+    relF = (gPlayStartLBA - gTrackStartLBA) + framesPlayed;
+    if (relF < 0) relF = 0;
+
+    gPub->curTrack    = gCurTrack;
+    gPub->curAbsFrame = absF;
+    gPub->curRelFrame = relF;
+    gPub->playState   = gPaused ? 2 : 1;
+    gPub->posSeq++;
+}
+
 /* ---- the doubleback proc: INTERRUPT LEVEL --------------------------------- */
 
 static pascal void DoubleBack(SndChannelPtr chan, SndDoubleBufferPtr buf)
@@ -218,6 +262,7 @@ void CDPumpStop(void)
     gPlaying = false;
     gPaused  = false;
     GiveBackBlockSize();
+    PublishCursor();          /* playState 0, so the handler stops synthesising */
 }
 
 /* Resolve a transport request's csParam into an LBA range using the TOC. Both the MSF
@@ -273,6 +318,23 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     gNextLBA = a; gEndLBA = b;
     gUnderruns = 0; gPaused = false;
 
+    /* Which track this position falls in, for the track-relative cursor. */
+    gPlayStartLBA  = a;
+    gCurTrack      = gTOC.firstTrack;
+    gTrackStartLBA = a;
+    {
+        short i;
+        for (i = 0; i < gTOC.trackCount; i++) {
+            if (gTOC.track[i].lba <= a &&
+                (i + 1 >= gTOC.trackCount || gTOC.track[i + 1].lba > a)) {
+                gCurTrack      = gTOC.track[i].number;
+                gTrackStartLBA = gTOC.track[i].lba;
+                break;
+            }
+        }
+    }
+    CDLogf("  pump: inside track %d (starts at LBA %ld)", gCurTrack, gTrackStartLBA);
+
     TakeBlockSize();
     while ((gWriteOff - gReadOff) < gPCMBytes)
         if (RefillOnce() <= 0) break;
@@ -300,6 +362,7 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     err = SndPlayDoubleBuffer(gChan, (SndDoubleBufferHeaderPtr)&h);
     CDLogf("  pump: SndPlayDoubleBuffer err=%d", err);
     if (err != noErr) { gPlaying = false; GiveBackBlockSize(); }
+    PublishCursor();
     return err;
 }
 
@@ -311,6 +374,7 @@ void CDPumpPause(Boolean pause)
     c.cmd = pause ? pauseCmd : resumeCmd;
     c.param1 = 0; c.param2 = 0;
     (void)SndDoImmediate(gChan, &c);
+    PublishCursor();
 }
 
 /* Called from the pump's event loop, as often as it gets time. This is Phase 1's
@@ -318,6 +382,8 @@ void CDPumpPause(Boolean pause)
 void CDPumpIdle(void)
 {
     long guard = 4;
+
+    PublishCursor();
 
     if (!gPlaying || gPaused) return;
 

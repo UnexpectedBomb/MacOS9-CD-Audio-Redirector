@@ -1300,3 +1300,63 @@ Drive stationary + music audible = the audio is coming from our DAE + Sound Mana
    data, the game issuing the calls, and whether an audio session mounts alongside the HFS
    volume are all untested. That is precisely what Jubadub's run settles.
 4. A README a third party can follow, then the forum post.
+
+# Step 5c — position synthesis (built 2026-08-06, not yet run)
+
+`CDPump_v2`. The last remaining functional gap: a game polling for track end saw the
+driver's frozen position, so music played but never looped.
+
+## Chain-then-rewrite, made possible by the last run
+
+The open question was whether a **queued** call returns to us if we chain it. The last run
+answered it for free: CDPlayProbe polled `AudioStatus` and `ReadQ` **forty times through our
+handler**, and every one chained and came back with data. So the handler can let the
+original answer and then correct it — no need to reproduce the `jIODone` completion
+protocol from PowerPC, which was the thing I did not want to guess at.
+
+```c
+err = gOrigCtl(pb, dce);        /* let the original answer */
+... overwrite csParam from our cursor ...
+return err;                     /* the caller sees our values */
+```
+
+Safe because the caller is blocked in the same thread of control: even if the original
+completed the request internally, it cannot resume until we return.
+
+## The cursor comes from what the speaker has heard
+
+Published by the pump, derived from `gReadOff` — bytes the Sound Manager has **consumed** —
+not from what was requested and not from how much has been read off the disc. FEASIBILITY §6
+warned that a cursor taken from the wrong place gives music that never loops or loops
+instantly; the only honest source is what has actually been played.
+
+2352 bytes = one CD frame, and absolute frame numbering is LBA + 150, matching what `ReadQ`
+reported on hardware in Phase 0.
+
+## What gets rewritten, and what deliberately does not
+
+- **`ReadQ` (101): all nine bytes.** Its layout was cross-checked against the TOC to the
+  exact frame in Phase 0 — control/adr, track BCD, index, track-relative MSF, absolute MSF —
+  so there is nothing to guess.
+- **`AudioStatus` (107): bytes 3..5 only, plus byte 0.** Bytes 3..5 are the absolute MSF and
+  match `ReadQ`'s. The rest of the original's answer is left untouched, because we cannot
+  decode it and inventing values would be worse than passing them through.
+- **⚠ Byte 0 is a guess, and marked as one.** The MMC audio-status codes are 0x11
+  play-in-progress, 0x12 paused, 0x13 completed; this driver returned 0x00 in every Phase-0
+  sample, which is not a valid MMC code. Reporting play-in-progress is the reading most
+  likely to make a polling game behave, it is a single named constant
+  (`kSynthStatusPlaying`) to change, **and the pump now logs what the original actually
+  answered** so the guess can be replaced with evidence.
+
+Synthesis only happens while `playState != 0`, so when nothing is playing the driver's own
+answers pass through untouched.
+
+## What the next run should show
+
+- Music, as before.
+- `ORIGINAL AudioStatus answer (before our rewrite)` and the same for `ReadQ`, logged once
+  each — the evidence for byte 0.
+- `synthesised answers: N AudioStatus, M ReadQ` at stop, with N and M non-zero.
+- ★ And in `CDPlayProbe`'s own log, the line that has said `reported status did NOT change`
+  in every run so far should finally say the position **CHANGED** — the probe polls for 10
+  seconds, so a moving cursor is exactly what it is built to detect.

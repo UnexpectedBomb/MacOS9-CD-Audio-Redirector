@@ -36,6 +36,6 @@ resource 'vers' (1, "CDPump") {
     development,
     0x01,
     verUS,
-    "3.0d1",
-    "3.0d1, CD Audio Redirector Step-2 engine residency + validation"
+    "4.0d1",
+    "4.0d1, CD Audio Redirector Step-2 engine residency + validation"
 };
