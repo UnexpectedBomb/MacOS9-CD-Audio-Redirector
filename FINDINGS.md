@@ -1606,10 +1606,93 @@ case, and it rests on this particular driver ignoring `ioVRefNum`. Jubadub's dri
 `EnsureTOC` should refresh `gDriveNum` alongside the TOC. Cheap, and it removes the assumption
 rather than relying on it holding.
 
-### 3. A stale interpretation line, again
+### 3b. A stale interpretation line, again
 
 The log says `--- discovery stage 2 SKIPPED (shift held) ---`. Shift was **not** held; option
 was. The call site passes `allowFullSweep = false` unconditionally
 (`cd_engine_install.c:474`), so the message names a cause that had nothing to do with it.
 Third instance of the same class in this project — the message must state what the code
 actually did, not why it once did it.
+
+# Run 2026-08-06d: the shipping artifact, installed and booted — PASSES
+
+`CDAudioRedirector_v1` dropped into `System Folder:Startup Items:`, machine rebooted with the
+**tray empty**, disc inserted afterwards, `CDPlayProbe_v3` run once. Logs in
+`logs/2026-08-06-faceless-startup/`. This is the end-user flow with no human in the loop.
+
+```
+=== CD Audio Redirector v1 - Red Book CD audio for legacy Mac CD games
+=== FACELESS: patching automatically, no window, runs until shutdown
+  quit Apple event handler installed err=0
+  open-application handler installed err=0
+  ...
+  patch returned 0, status=0, patched=1
+  pump: no TOC at startup (empty drive?) - will re-read on the first play request
+=== PUMP RUNNING ===
+  pump: drive number resolved to 4 (it was 0 at launch, when the tray was empty)
+  pump: TOC generation 1 - 16 track(s), 16 audio, first=1 last=16
+  pump: play LBA 0 .. 13922 (13922 sectors, 185 s)
+  pump: SndPlayDoubleBuffer err=0
+```
+
+- **Patches unattended at boot with no key held**, both Apple event handlers install cleanly,
+  and the user confirms it does not appear in the Application menu.
+- **`RefreshDriveNumber` fired and did its job**: `drive number resolved to 4`, so the shipping
+  build no longer rests on the driver tolerating `ioVRefNum = 0`.
+- Probe: `MUSIC WAS AUDIBLE`, `patched=1 pumpAlive=1 underruns=0`, cursor `11 00 00 00 12 00`
+  = 10.0 s delivered, exact to the frame — and this was a **different disc** (16 tracks,
+  track 1 = 185 s) from every previous run, so `DecodePos` has now resolved against two TOCs.
+- **Zero underruns with the pump as a genuine background Startup Items app.** Encouraging for
+  the background-time question, though the probe still is not a game.
+
+⚠ **Not verified by this log: the quit path.** The log ends mid-session with no
+`=== pump stopped ===` block, because it is written only when the pump loop exits and the
+pump was still running when the log was copied. Whether the quit handler actually fires at
+shutdown needs the log re-copied *after* a restart. Cheap to get; not yet evidence.
+
+## ★ REAL BUG FOUND IN THE LOG: the mailbox is one slot, and it drops requests
+
+The request numbers in this run are **1, 4, 5, 6, 7** — 2 and 3 never appear. Previous runs
+show the same shape (3,4,5,6 then 9,10,11,12: 7 and 8 missing).
+
+`PumpLoop` is the cause, and it is a design property rather than a slip:
+
+```c
+seq = pub->reqSeq;
+if (seq != lastSeq) {
+    cs = pub->reqCsCode;          /* whatever is in the slot RIGHT NOW */
+    ...
+    lastSeq = seq;                /* jumps over everything in between */
+```
+
+The handler writes each request into a **single slot** and bumps `reqSeq`. If two requests
+arrive between two passes of the pump's event loop, the first is overwritten and lost —
+silently, since `lastSeq` jumps straight to the newest sequence number.
+
+It has been harmless so far only by luck of ordering: the dropped calls were
+`AudioControl` (volume) and `AudioTrackSearch` with the hold flag, neither of which the pump
+acts on anyway. **Nothing protects an `AudioPlay`.** A game that issues `AudioStop`
+immediately followed by `AudioPlay` — which is exactly how a music loop restarts — can have
+the `AudioPlay` land in the same window and be dropped, giving silence with no error anywhere.
+
+The pump polls fast (its loop sleeps 1 tick), so the window is small, which is why this has
+not bitten yet. Small is not zero, and the failure is silent.
+
+**Fix: make the mailbox a small ring** — say 16 entries, the same single-producer /
+single-consumer discipline already used for the PCM ring, with the pump draining every
+pending entry per pass instead of reading one. The handler stays what it must be: a write and
+a chain, safe at any interrupt level.
+
+## The refNum has now been three different values
+
+−66, −56, and −68 across three boots. Nothing hardcodes it, and the discovery finds it every
+time. Recorded because the temptation to write "the CD driver is −66" into a doc or a test
+instruction is real, and it would be wrong two times in three.
+
+## Something other than our probe issues legacy audio calls
+
+`request 1: csCode 106` (`AudioStop`) arrives on its own, right after `PUMP RUNNING` and
+before the probe was launched — almost certainly the Finder or the CD Remote machinery on
+disc insertion. Harmless (a stop on an idle pump does nothing), and it quietly amends the
+earlier note that `audioCallCount = 0` because *nothing* on the machine uses the legacy audio
+API. Something does, on the disc-insertion path.

@@ -82,7 +82,14 @@ exactly one generation line, so the change suppression works.
 - The `discovery stage 2 SKIPPED (shift held)` message now says what the code actually did.
 - Do not assume the CD driver's refNum: it was −66 one boot and −56 the next.
 
-### 1. ✅ Faceless Startup-Items packaging — BUILT as `CDAudioRedirector_v1`, awaiting hardware
+### 1. ✅ Faceless Startup-Items packaging — **PASSED on hardware 2026-08-06d**
+Installed in Startup Items, booted with an empty tray, disc inserted after: patched
+unattended with no key held, both Apple event handlers installed, not in the Application
+menu, `drive number resolved to 4`, 16-track disc picked up as `TOC generation 1`, music
+audible, 0 underruns. ⚠ The **quit path is still unverified** — the log ends mid-session
+because `=== pump stopped ===` is only written when the loop exits. Re-copy
+`CD Audio Redirector Log` after a normal restart to confirm the handler fires.
+
 One source, two targets, selected by `CD_FACELESS`. Building the shipping artifact from the
 same file as the tested one is deliberate: a parallel copy of an installer is exactly how the
 thing that ships stops being the thing that was tested.
@@ -109,6 +116,22 @@ far had the pump in the background behind `CDPlayProbe`, which sleeps generously
 recorded zero underruns. A full-screen game may be greedier. The underrun counter in the log
 is the measurement; if it climbs, the dials are a bigger ring first, then larger reads per
 refill.
+
+### 1b. ⚠ The mailbox is one slot and it drops requests  *(found 2026-08-06d — do this next)*
+Request numbers in every run so far skip: `1, 4, 5, 6, 7` in the faceless run, `3,4,5,6` then
+`9,...` before that. `PumpLoop` reads whatever is in the single slot and sets
+`lastSeq = seq`, jumping over anything that arrived in between. The handler writes one slot
+and bumps `reqSeq`; two requests inside one pump pass means the first is lost, silently.
+
+Harmless so far only by ordering luck — the dropped calls were `AudioControl` and
+`AudioTrackSearch`-with-hold, which the pump ignores anyway. **Nothing protects an
+`AudioPlay`**, and `AudioStop` immediately followed by `AudioPlay` is exactly how a game
+restarts a music loop. The window is small because the pump sleeps only 1 tick; small is not
+zero, and the failure mode is silence with no error logged anywhere.
+
+Fix: a small ring (16 entries is plenty) with the same single-producer / single-consumer
+discipline as the PCM ring, drained fully each pass. The handler stays a write plus a chain,
+safe at any interrupt level. Log a counter of dropped entries so an overflow is never silent.
 
 ### 2. Multi-track and looping behaviour
 **Repeat play is DONE and PASSED** (2026-08-06b, three plays against one live pump: cursor
