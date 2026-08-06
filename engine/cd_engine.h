@@ -133,6 +133,40 @@ typedef struct {
 
 #define kEngineRingEntries  512
 
+/* ---- how a separate app finds the resident engine -------------------------- *
+ * The engine's globals live in its own CFM data section, which no other process can
+ * locate. So it allocates ONE system-heap block of this shape and publishes the
+ * address through a value-based Gestalt selector — `SetGestaltValue`, which is
+ * create-or-replace, so repeated installs are idempotent.
+ *
+ * Value-based deliberately: `NewGestalt` takes a selector FUNCTION, which would mean
+ * handing the native Gestalt Manager a callback to invoke. A plain long needs no UPP
+ * and no callback, so there is nothing for it to get wrong.
+ *
+ * The counters live HERE rather than in the engine's statics so a reader sees live
+ * values, and the handler updates them with plain stores — it may be at interrupt
+ * time. */
+#define kEnginePublicSelector   FOUR_CHAR_CODE('CDau')
+
+typedef struct {
+    OSType          magic;          /* kEngineMagic                             */
+    short           version;
+    short           patched;        /* 1 while our TVector is in the descriptor */
+
+    short           cdRefNum;
+    short           reserved0;
+
+    Ptr             origTVector;    /* saved, for reference                     */
+    Ptr             ourTVector;
+
+    Ptr             ring;           /* CDEngineTrace[ringEntries]               */
+    long            ringEntries;
+
+    volatile long   writeCount;     /* monotonic; & (ringEntries-1) = next slot */
+    volatile long   callCount;      /* every Control call seen                  */
+    volatile long   audioCallCount; /* just the audio-family csCodes            */
+} CDEnginePublic;
+
 /* The command code we invoke DoDriverIO with. We call it ourselves rather than
  * letting the Device Manager do it — the fragment is never installed into the unit
  * table — so `contents` carries a CDEngineInfo* instead of a DriverInitInfo*. */

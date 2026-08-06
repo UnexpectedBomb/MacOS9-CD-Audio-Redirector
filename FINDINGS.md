@@ -938,3 +938,45 @@ through the saved TVector. The DRVR header, the driver's name, its address and
 Not yet run. **Does iTunes still read the audio CD, and does `CDRecon_v2` still show the
 `Audio CD 1` volume, with the patch live?** That is what killed the 68K generation, and it
 must be tested in the same boot session — the patch does not survive a restart.
+
+## Step 3 coexistence test — PASSED
+
+With the patch live: **iTunes still reads the audio CD**, and `CDRecon_v2` still sees the
+disc's volume. This is the test that killed the 68K generation, and it passes.
+
+The user noted the volume now shows the album's real name rather than `Audio CD 1`.
+**That is almost certainly not our doing** and should not be recorded as an effect of the
+patch: our handler traces and chains verbatim without touching `csParam`, so it cannot
+influence naming. What changed is that iTunes identified the disc earlier in the session
+and cached its title in the CD Remote Programs database, which Audio CD Access then uses
+in place of the generic name.
+
+**⇒ Interposition on the ATAPI `.AppleCD` is now proven safe:** the patch installs, the
+handler is called, calls chain correctly, and the OS's own CD stack — Audio CD Access,
+volume mounting, iTunes — carries on unaffected. That is everything Phase 2a set out to
+establish, finally achieved on the architecture that inserts no new Mixed Mode boundary.
+
+# Step 4 — the trace reader (built 2026-08-05, not yet run)
+
+`CDTraceRead_v1`, plus engine changes.
+
+The 68K reader found the ring by following the patched `dCtlDriver`. That anchor is gone
+**by design**: the new patch leaves `dCtlDriver`, the DRVR header and the driver's name
+completely alone. Nothing about the driver reveals us any more — which is exactly why
+iTunes kept working, and exactly why a publication channel was needed.
+
+So the engine now allocates one system-heap `CDEnginePublic` block and publishes its
+address with **`SetGestaltValue('CDau', addr)`**. Value-based deliberately: `NewGestalt`
+takes a selector *function*, which would mean handing the native Gestalt Manager a
+callback to invoke; a plain long needs no UPP and no callback. `SetGestaltValue` is
+create-or-replace, so installing twice in one boot repoints the selector instead of
+failing.
+
+The counters live in that block rather than in the engine's statics, so a reader sees live
+values, and the handler still only does plain stores — `writeCount` incremented **last**,
+so a reader never sees a slot count that outruns its contents.
+
+What the reader reports: `patched`, `callCount`, `audioCallCount`, both TVectors, and the
+ring decoded oldest-first with csCode names and immediate-vs-queued per entry. It warns
+explicitly when `patched=0` or `callCount=0`, since after any reboot the expected state is
+"engine not resident" — the patch never persists.

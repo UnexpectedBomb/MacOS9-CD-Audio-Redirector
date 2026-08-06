@@ -22,6 +22,7 @@
 #include <Files.h>
 #include <MacMemory.h>
 #include <MixedMode.h>
+#include <Gestalt.h>
 #include <Timer.h>
 #include <Events.h>
 
@@ -91,8 +92,7 @@ typedef OSErr (*CDCtlProc)(ParmBlkPtr pb, DCtlPtr dce);
 static CDCtlProc       gOrigCtl    = NULL;
 static CDEngineTrace  *gRing       = NULL;
 static CDEngineInfo   *gInfo       = NULL;
-static volatile long   gWriteCount = 0;   /* monotonic; masked to pick the slot */
-static volatile long   gCallCount  = 0;
+static CDEnginePublic *gPub        = NULL;  /* system heap, published via Gestalt */
 
 /* Everything patch/unpatch needs, held HERE rather than in the caller's info block —
  * that block is a global in the installer application and dies when it quits. */
@@ -115,20 +115,27 @@ static Boolean              gPatched    = false;
  * whatever the original does about jIODone for a queued request, it keeps doing. */
 OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
 {
-    if (gRing != NULL && pb != NULL) {
-        CDEngineTrace *e = &gRing[gWriteCount & (kEngineRingEntries - 1)];
+    if (gRing != NULL && gPub != NULL && pb != NULL) {
+        CDEngineTrace *e = &gRing[gPub->writeCount & (kEngineRingEntries - 1)];
+        short          cs = ((CntrlParam *)pb)->csCode;
         int            i;
 
         e->ticks  = LM_Ticks;
-        e->csCode = ((CntrlParam *)pb)->csCode;
+        e->csCode = cs;
         e->ioTrap = (unsigned short)pb->ioParam.ioTrap;
         for (i = 0; i < 8; i++)
             e->csParam[i] = ((unsigned char *)((CntrlParam *)pb)->csParam)[i];
 
-        /* Incremented last, so a reader never sees a count that outruns its
+        gPub->callCount++;
+        if (cs == kcsAudioPlay || cs == kcsAudioTrackSearch || cs == kcsAudioPause ||
+            cs == kcsAudioStop || cs == kcsAudioStatus      || cs == kcsAudioScan  ||
+            cs == kcsAudioControl || cs == kcsReadTheQSubcode ||
+            cs == kcsReadAudioVolume)
+            gPub->audioCallCount++;
+
+        /* Incremented LAST, so a reader never sees a slot count that outruns its
          * contents. Plain stores throughout: this may be interrupt time. */
-        gWriteCount++;
-        gCallCount++;
+        gPub->writeCount++;
     }
 
     if (gOrigCtl == NULL) return controlErr;
@@ -307,6 +314,27 @@ static OSErr EngineInit(CDEngineInfo *info)
     info->ring        = (Ptr)gRing;
     info->ringEntries = kEngineRingEntries;
 
+    /* Publish, so a separate reader app can find the ring and the counters. */
+    if (gPub == NULL) {
+        gPub = (CDEnginePublic *)NewPtrSysClear((Size)sizeof(CDEnginePublic));
+        if (gPub == NULL) { info->status = kEngineNoMemory; return noErr; }
+    }
+    gPub->magic          = kEngineMagic;
+    gPub->version        = kEngineVersion;
+    gPub->patched        = 0;
+    gPub->cdRefNum       = refNum;
+    gPub->origTVector    = info->origTVector;
+    gPub->ourTVector     = info->ourTVector;
+    gPub->ring           = (Ptr)gRing;
+    gPub->ringEntries    = kEngineRingEntries;
+    gPub->writeCount     = 0;
+    gPub->callCount      = 0;
+    gPub->audioCallCount = 0;
+
+    /* SetGestaltValue is create-or-replace, so installing twice in one boot just
+     * repoints the selector rather than failing. */
+    (void)SetGestaltValue(kEnginePublicSelector, (long)gPub);
+
     /* Kept resident here rather than in the info block, so neither the handler nor
      * a later patch/unpatch ever dereferences caller-owned memory. */
     gOrigCtl = (CDCtlProc)info->origTVector;
@@ -345,6 +373,7 @@ static OSErr EnginePatch(CDEngineInfo *info)
     gCtlRD->routineRecords[0].procDescriptor = (ProcPtr)CDEngineControl;
     gPatched = true;
 
+    if (gPub != NULL) gPub->patched = 1;
     if (info != NULL) {
         info->patched     = 1;
         info->origTVector = (Ptr)gSavedTV;
@@ -366,6 +395,7 @@ static OSErr EngineUnpatch(CDEngineInfo *info)
     gCtlRD->routineRecords[0].procDescriptor = gSavedTV;
     gPatched = false;
 
+    if (gPub != NULL) gPub->patched = 0;
     if (info != NULL) {
         info->patched = 0;
         info->status  = (gCtlRD->routineRecords[0].procDescriptor == gSavedTV)
