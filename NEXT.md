@@ -36,6 +36,16 @@ They **append** — read from the last banner.
 
 ## Next steps, in order
 
+### 0. ⚠ Re-read the TOC on demand  *(blocks step 1 — do this first)*
+`CDPumpInit` reads the TOC **once**, at launch, and nothing re-reads it
+([cd_pump_audio.c:189](engine/cd_pump_audio.c:189)); `DecodePos` resolves every request
+against that snapshot. A faceless Startup-Items app launches at boot with an **empty drive**,
+so `gTOC.valid` is false for the whole session and no request can ever resolve. Re-read
+inside `CDPumpPlay` when the TOC is invalid or the disc may have changed.
+
+Until this is fixed, every hardware run must put the disc in the drive **before** launching
+the pump, and must not swap discs afterwards: one disc per boot.
+
 ### 1. Faceless Startup-Items packaging  *(packaging, no new mechanism)*
 Ship as one file the user drops into Startup Items. Hide it from the Application menu with
 SIZE flags `modeCanBackground|modeOnlyBackground|modeHighLevelEventAware` = **0x14C0**, the
@@ -48,8 +58,14 @@ call (the deadlock); and an INIT patches too early to find the real ATAPI driver
 app gives the identical user experience — one file, one restart, invisible.
 
 ### 2. Multi-track and looping behaviour
-Play a track to its natural end and confirm the position holds at the boundary with status
-`0x13` rather than reverting. Then a second `AudioPlay` for a different track.
+**Repeat play is DONE and PASSED** (2026-08-06b, three plays against one live pump: cursor
+restarts from zero every time, 0 underruns, block size taken and given back three times each
+— see FINDINGS). Still open, and both need a probe change because `CDPlayProbe` always
+targets the *first* audio track and always stops after ~12 s:
+
+- a second `AudioPlay` for a **different** track (new `gTrackStartLBA`, new range);
+- a track played to its **natural end**, confirming the position holds with status `0x13`
+  rather than reverting.
 
 ### 3. ⚠ A REAL MIXED-MODE GAME DISC — the biggest untested gap
 Everything so far used a pressed *audio* CD. Untested and materially different:
@@ -90,3 +106,18 @@ ask every time. No em-dashes in anything published externally.
 - **A diagnostic's interpretation text goes stale.** `CDPlayProbe`'s "therefore" line was
   wrong twice in three runs as the system gained capabilities. Re-check the tooling's
   conclusions whenever behaviour changes.
+- **The pump's TOC is a snapshot taken at launch.** Disc in the drive first, no swaps.
+  See step 0 — this is also a shipping blocker.
+
+## Numbers worth knowing
+
+Measured 2026-08-06b, G4 mini, pressed audio CD:
+
+- **Warm CD-DA read throughput ≈ 330 KB/s, 1.9x real time.** Cold it is 153 KB/s, which is
+  *below* real time. This is the number that decides whether a game can read level data while
+  music plays; the spare bandwidth is about 0.9x real time, which is not generous.
+- **Start latency: 1.5 s warm, 2.7 s cold**, from the game's `AudioPlay` to first sound
+  (~0.37 s mailbox latency plus the 2.0 s pre-roll read). Reducible by shrinking the pre-roll,
+  but the pre-roll is also the underrun cushion — do not shrink it blind.
+- `accRun` arrives every 120 ticks = 2.0 s; the pump does not rely on it, it refills from its
+  own event loop.

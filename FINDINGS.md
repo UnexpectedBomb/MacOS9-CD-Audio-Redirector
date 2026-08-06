@@ -1427,3 +1427,118 @@ byte reports completed (`0x13`), which is what a real drive does. Only an explic
 legacy call, play the audio digitally, and report a truthful advancing position with a
 sane end-of-track. What remains is packaging and validation against a real game, not
 mechanism.
+
+# Run 2026-08-06b: repeat play, the loop path
+
+G4 mini, pressed audio CD (15 audio tracks, lead-out 57:03:45). One boot: `CDPump_v3`
+launched with option, then **`CDPlayProbe_v3` run three times against that one live pump**,
+then `CDTraceRead_v1`. Logs in `logs/2026-08-06-repeat-play/`.
+
+Run validation: last banners are `CDPump v3` / `CDPlayProbe v3`, `patched=1`, three
+`pump: play LBA` blocks, 329 trace entries in a 512-entry ring so **nothing wrapped** — the
+trace is a complete record of the boot, not a window onto it.
+
+## The re-arm works. Three plays, and the cursor restarts from zero each time
+
+All three probe runs: `MUSIC WAS AUDIBLE`, `reported status CHANGED`, redirector reported
+resident. The decisive evidence is the synthesised position at the end of each run:
+
+| run | last AudioStatus | abs MSF | frames | LBA | seconds delivered |
+|---|---|---|---|---|---|
+| 1 | `11 00 00 00 12 18` | 00:12:18 | 918 | 768 | 10.24 |
+| 2 | `11 00 00 00 12 00` | 00:12:00 | 900 | 750 | 10.00 |
+| 3 | `11 00 00 00 12 00` | 00:12:00 | 900 | 750 | 10.00 |
+
+Each equals the probe's own 10 s poll window, to the frame. **This is the discriminator**:
+had `CDPumpPlay` failed to reset `gReadOff`/`gWriteOff`, run 2 would have reported ~20 s and
+run 3 ~30 s. It reports 10 s every time, so the stop-and-restart path in `CDPumpPlay` is
+correct and a game that loops its music will be served indefinitely.
+
+The first sample of every run is the pass-through original `00 00 00 07 18 68` — status byte
+`0x00`, idle — captured before the first synthesised answer. Consistent across all three.
+
+`0 underruns` across all three plays, 2282 KB delivered on the final one.
+
+## The block size is balanced: taken three times, given back three times
+
+The trace ring shows one shape, repeated exactly three times with nothing left over:
+
+```
+AudioControl(volume) -> AudioTrackSearch -> AudioPlay -> ChangeBlockSize(0x0930 = 2352)
+   -> 40 x [AudioStatus + ReadQ] -> AudioPause(1) -> AudioPause(0) -> AudioStop
+   -> ChangeBlockSize(0x0200 = 512)
+```
+
+Six `ChangeBlockSize` calls, alternating 2352 and 512. `TakeBlockSize`/`GiveBackBlockSize`
+do not leak the drive's block size across plays, which is what would have poisoned a game's
+data reads after the first piece of music ended.
+
+Full histogram over the boot: 120 AudioStatus, 120 ReadQ, 12 ReadTOC, 6 AudioPause,
+3 each of AudioControl / AudioTrackSearch / AudioPlay / AudioStop, 6 ChangeBlockSize, the
+rest `accRun`. The engine reports 114 synthesised AudioStatus against 120 seen: the missing
+6 are the two polls per run that arrive before the pre-roll finishes, so the pump is not yet
+playing and correctly passes them through. 120 − 6 = 114 exactly.
+
+## ★ The warm read throughput, finally measured: ~330 KB/s, 1.9x real time
+
+FINDINGS previously flagged the 106 KB/s figure as a cold-read artifact and asked for a
+warm measurement. The trace gives it, because the pre-roll read sits between two timestamped
+calls: `ChangeBlockSize(2352)` and the next poll to arrive.
+
+| run | pre-roll gap | 352800 bytes at | vs real time (176.4 KB/s) |
+|---|---|---|---|
+| 1 (cold) | 138 ticks = 2.30 s | 153 KB/s | 0.87x — below real time |
+| 2 (warm) | 66 ticks = 1.10 s | 320 KB/s | 1.82x |
+| 3 (warm) | 64 ticks = 1.07 s | 330 KB/s | 1.87x |
+
+**Warm, the drive delivers CD-DA at about 1.9x real time.** That is the headroom figure to
+reason about, and it explains the zero underruns. It is also the number that decides the
+data-contention question on a real game disc: a game reading level data from track 1 while
+music plays has roughly 0.9x real time of spare drive bandwidth to work with, which is not
+generous. Cold, the drive is *below* real time, so the pre-roll is doing real work.
+
+## ★ Start latency: 2.7 s cold, 1.5 s warm, from AudioPlay to first sound
+
+Measured `AudioPlay` (trace) to the first call after the pre-roll completes:
+
+- run 1: t=28109 → 28269 = 160 ticks = **2.67 s**
+- runs 2 and 3: ~90 ticks = **1.50 s**
+
+Two components: ~0.37 s of mailbox latency (the handler posts, the pump collects it on its
+next event-loop pass) plus the 2 s pre-roll read itself.
+
+A real drive starts audio in a few hundred milliseconds. 1.5 s is probably tolerable in a
+game, but it is a visible difference in behaviour and it is cheap to improve: the 352800-byte
+(2.0 s) pre-roll is larger than it needs to be now that sustained throughput is known to be
+1.9x real time. Starting at ~0.5 s of pre-roll and letting the refill loop catch up would cut
+perceived latency by roughly a second. **Not yet done, and it should not be done blind** —
+the 2 s pre-roll is also the underrun cushion, and the cold-read number above shows the first
+read genuinely is slower than real time.
+
+## ⚠ The pump reads the TOC once, at launch. This blocks the Startup-Items packaging
+
+`CDPumpInit` calls `CDReadTOC` once (`cd_pump_audio.c`), and nothing re-reads it.
+`DecodePos` resolves every request against that one snapshot. Confirmed in the trace: the
+pump's three `ReadTOC` calls are at t=26837, at install; the second group at t=28104 is the
+probe's own, chained through.
+
+Consequences:
+
+1. **For testing:** the disc must be in the drive before the pump is launched, and cannot be
+   swapped afterwards. One disc per boot.
+2. **For shipping — this is a blocker.** A faceless Startup-Items app launches at boot with
+   an empty drive. `gTOC.valid` is false, and it stays false for the whole session, so no
+   request can ever be resolved. The fix is to re-read the TOC inside `CDPumpPlay` when the
+   TOC is invalid or the disc may have changed. **Do this before building the faceless
+   version**, or the handoff ships a build that only works when a disc happened to be in the
+   tray at startup.
+
+## Still untested after this run
+
+- **A second AudioPlay for a *different* track.** All three runs targeted track 1, because
+  `CDPlayProbe` always selects the first audio track on the disc. The re-arm is proven; track
+  *switching* — a new `gTrackStartLBA`, a new range — is not.
+- **Natural end of track.** The probe stops after ~12 s; track 1 is 216 s long. The
+  `playState = 3` / status `0x13` path has never executed on hardware.
+- **A disc whose track 1 is data.** `DecodePos` has only ever run against an all-audio TOC.
+- **Data reads contending with music.** The 1.9x figure above says it will be tight.
