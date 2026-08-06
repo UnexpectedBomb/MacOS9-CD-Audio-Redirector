@@ -1018,3 +1018,39 @@ returned an error I threw away.
 
 The next run therefore produces the trace regardless of whether Gestalt cooperates, and
 tells us which registration call works for future use.
+
+## Step 4 run 2 — PASSED. The handler is live, and the ring is readable
+
+```
+Gestalt registration: NewGestaltValue=0 ReplaceGestaltValue=1 SetGestaltValue=1
+⇒ 'CDau' IS published
+CDTraceRead: Gestalt err=0 value=0x0182A590
+  version=1  patched=1  cdRefNum=-66
+  origTVector=0x01854D00  ourTVector=0x01861B80
+  callCount=3  audioCallCount=0  writeCount=3
+  0  t=12723  cs=65  accRun  ioTrap=0xA204 IMMEDIATE
+  1  t=12843  cs=65  accRun  ioTrap=0xA204 IMMEDIATE
+  2  t=12965  cs=65  accRun  ioTrap=0xA204 IMMEDIATE
+```
+
+**`NewGestaltValue` is the call that works** for installing a brand-new value selector;
+`SetGestaltValue` (my original choice) does not, and returned an error I had discarded.
+Worth remembering for any future OS 9 work: use `NewGestaltValue` to install,
+`ReplaceGestaltValue` to change an existing one.
+
+**Our PowerPC handler is live, is being called, and chains correctly.** Everything the 68K
+generation was trying to establish is now established on an architecture that coexists
+with iTunes and Audio CD Access.
+
+### ★ Measured: `accRun` arrives every 120 ticks = 2.0 seconds
+
+`t=12723 / 12843 / 12965` — 120 ticks apart, exactly `dCtlDelay = 120`. So `accRun` is a
+genuine task-level pump, and it is **far too slow as configured**: a 2-second ring
+refilled every 2 seconds runs dry continuously. PHASE2.md §2 predicted this; it is now
+measured. Step 5 must shorten `dCtlDelay` while playing (≈6 ticks ⇒ ~10 Hz ⇒ ~17.6 KB per
+refill, comfortable against 32-sector reads) and restore it on stop.
+
+`audioCallCount=0` is expected: nothing on the machine issues the legacy audio csCodes.
+iTunes uses DAE, not `AudioPlay`. **`CDPlayProbe_v2` does** — which makes it the
+stand-in for a game until a real mixed-mode disc is available, and the natural way to
+drive Step 5 end to end.
