@@ -1181,3 +1181,49 @@ Jubadub: a Startup-Items application.
 The handler becomes trivially safe at any interrupt level — a few stores and a chain — and
 the audio runs where Phase 1 measured 30 seconds with zero underruns. If the pump is not
 running, `AudioPlay` requests are simply unserviced: no crash, safe degradation.
+
+# Step 5b — the restructure: driver posts, pump plays (built 2026-08-06, not yet run)
+
+`CDPump_v1` replaces `CDEngineInstall_v3`. Same patch, same engine PEF minus all audio,
+plus a pump loop in the application.
+
+## The split
+
+| | driver patch (resident PEF) | pump (application) |
+|---|---|---|
+| on an audio csCode | copy csCode + 16 csParam bytes into a mailbox, bump `reqSeq`, **chain** | notice `reqSeq` changed, decode, play |
+| I/O | **none, ever** | all of it, at task level |
+| TOC | not needed | read at startup |
+| ring, buffers, sound channel | none | owns them |
+
+The handler is now a few plain stores and a chain, so it is safe at any interrupt level and
+cannot deadlock. Verified in the build: the engine PEF no longer imports `SndNewChannel` or
+`SndPlayDoubleBuffer` at all, and still exports `DoDriverIO`, `TheDriverDescription` and
+`CDEngineControl`.
+
+`reqSeq` is written **last** by the handler and read **twice** by the pump — a seqlock, so a
+request half-written when the pump looks is retried rather than acted on.
+
+## Everything in the pump is Phase-1 code
+
+DAE via `ChangeBlockSize(2352)` + driver-level `PBRead`; `SndPlayDoubleBuffer` with
+`'sowt'` and `notCompressed`; 0.25 s double buffers; a 2-second ring refilled from the
+event loop; 32-sector reads. That is stage B of the Phase-1 spike, which measured 30
+seconds with zero underruns on this machine. The only new thing is what triggers it.
+
+Two refinements carried over: the sound channel is allocated with the **system zone**
+current so it cannot die with the application, and the 2352-byte block size is taken only
+while playing and given back on stop, so data reads see the normal size the rest of the
+time.
+
+## Safe degradation
+
+If no pump is running, `AudioPlay` requests are recorded and never serviced. Nothing
+crashes; the driver answers exactly as it does unpatched. That is a much better failure
+mode than anything the 68K generation had.
+
+## Not yet done
+
+`AudioStatus`/`ReadQ` synthesis. The game still sees the driver's frozen position, so music
+will play but will not loop. Now that the pump owns the playback cursor, synthesis needs a
+route back from pump to handler — the mailbox in reverse — which is the next piece.

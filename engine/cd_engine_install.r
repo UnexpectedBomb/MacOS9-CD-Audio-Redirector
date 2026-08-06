@@ -1,4 +1,4 @@
-/* cd_recon.r — resources for CDEngineInstall, the Step-2 engine residency + validation app.
+/* cd_recon.r — resources for CDPump, the Step-2 engine residency + validation app.
  *
  * The summary window is created programmatically in cd_recon.c (NewWindow), so
  * the only resources needed are the memory partition and a version stamp.
@@ -26,11 +26,11 @@ resource 'SIZE' (-1) {
     notDisplayManagerAware,
     reserved,
     reserved,
-    768 * 1024,    /* preferred */
-    512 * 1024     /* minimum   */
+    4096 * 1024,    /* preferred */
+    3072 * 1024    /* minimum   */
 };
 
-resource 'vers' (1, "CDEngineInstall") {
+resource 'vers' (1, "CDPump") {
     0x00,
     0x30,                   /* 3.0 */
     development,

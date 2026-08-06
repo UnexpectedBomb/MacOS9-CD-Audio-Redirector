@@ -190,6 +190,29 @@ typedef struct {
     volatile long   writeCount;     /* monotonic; & (ringEntries-1) = next slot */
     volatile long   callCount;      /* every Control call seen                  */
     volatile long   audioCallCount; /* just the audio-family csCodes            */
+
+    /* ---- request mailbox -------------------------------------------------- *
+     * ★ This is what the deadlock forced. The handler used to read the disc and start
+     * playback itself, from inside the driver's own Control entry — and a synchronous
+     * PBRead to a driver cannot begin until the Control call it is nested in returns.
+     * Self-deadlock; AudioPlay froze on the first nested call.
+     *
+     * So the handler now does nothing but record the request here and chain. All I/O
+     * happens in the pump application, at its own task level, outside any Control call
+     * — which is exactly where Phase 1 measured 30 s of streaming with zero underruns.
+     *
+     * `reqSeq` is written LAST and read TWICE by the pump (seqlock): if it changed
+     * across the copy, the pump retries. The handler only ever does plain stores, so it
+     * stays safe at any interrupt level. */
+    volatile long   reqSeq;         /* bumped on every new request              */
+    volatile short  reqCsCode;
+    volatile short  reqReserved;
+    volatile unsigned char reqParam[16];   /* csParam as the caller passed it   */
+
+    /* Pump -> engine, purely informational so the trace can show it. */
+    volatile short  pumpAlive;
+    volatile short  pumpPlaying;
+    volatile long   pumpUnderruns;
 } CDEnginePublic;
 
 /* The command code we invoke DoDriverIO with. We call it ourselves rather than

@@ -7,7 +7,7 @@ set -u
 BUILD_DIR="${1:-$(dirname "$0")/../build}"
 PI=claude@pi3.local
 SHARE=/home/csell/shared
-BASES="CDEngineInstall_v3"
+BASES="CDPump_v1"
 
 if ! ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
         "${PI}" true 2>/dev/null; then
@@ -21,4 +21,4 @@ for base in ${BASES}; do
     [ -f "$bin" ] && { scp -q "$bin" "${PI}:${SHARE}/${base}.bin" || { echo "push-to-pi: scp ${base}.bin failed"; exit 0; }; }
     [ -f "$img" ] && { scp -q "$img" "${PI}:${SHARE}/${base}.img" || { echo "push-to-pi: scp ${base}.img failed"; exit 0; }; }
 done
-echo "push-to-pi: CDEngineInstall in ${SHARE}/ on pi3.local"
+echo "push-to-pi: CDPump in ${SHARE}/ on pi3.local"

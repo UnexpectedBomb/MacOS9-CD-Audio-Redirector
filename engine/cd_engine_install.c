@@ -48,8 +48,108 @@
 
 #include "cd_probe_common.h"
 #include "cd_engine.h"
+#include "cd_cscodes.h"
 
-#define kVersionString  "CDEngineInstall v3"
+/* The audio engine, in this application's task context (cd_pump_audio.c). */
+extern OSErr CDPumpInit(short refNum, short driveNum);
+extern OSErr CDPumpPlay(const unsigned char *csParam);
+extern void  CDPumpStop(void);
+extern void  CDPumpPause(Boolean pause);
+extern void  CDPumpIdle(void);
+extern void  CDPumpStats(Boolean *playing, long *underruns, long *delivered);
+
+/* Watch the engine's mailbox and service what the game asked for. Returns when the user
+ * clicks or presses a key.
+ *
+ * ★ This loop is the whole reason the restructure happened. The driver patch cannot do
+ * this work: a synchronous read to a driver deadlocks if issued from inside that driver's
+ * own Control call. Here we are in an ordinary application, outside any Control call, so
+ * the reads simply work — as Phase 1 measured. */
+static void PumpLoop(CDEnginePublic *pub, short refNum)
+{
+    long        lastSeq;
+    EventRecord evt;
+    long        reported = -1;
+
+    if (pub == NULL) return;
+    lastSeq = pub->reqSeq;
+    pub->pumpAlive = 1;
+
+    CDLogf("=== PUMP RUNNING. Click or press a key to stop and quit. ===");
+    CDProgressSay("pump running - now run CDPlayProbe_v2 and LISTEN");
+
+    for (;;) {
+        long          seq;
+        short         cs;
+        unsigned char param[16];
+        int           i;
+
+        /* Seqlock: copy, then re-read the sequence. A request half-written when we
+         * looked is retried rather than acted on. */
+        seq = pub->reqSeq;
+        if (seq != lastSeq) {
+            cs = pub->reqCsCode;
+            for (i = 0; i < 16; i++) param[i] = pub->reqParam[i];
+            if (pub->reqSeq == seq) {
+                lastSeq = seq;
+                CDLogf("--- request %ld: csCode %d ---", seq, cs);
+                CDLogHexAt("  param", param, 16, 0);
+                switch (cs) {
+                    case kcsAudioPlay:
+                        CDProgressSay("AudioPlay -> starting playback");
+                        (void)CDPumpPlay(param);
+                        break;
+                    case kcsAudioTrackSearch:
+                        /* csParam+6 non-zero means hold, not play. */
+                        if (param[6] == 0) {
+                            CDProgressSay("AudioTrackSearch -> starting playback");
+                            (void)CDPumpPlay(param);
+                        } else {
+                            CDLogf("  hold flag set; positioning only, not playing");
+                        }
+                        break;
+                    case kcsAudioPause:
+                        CDProgressSay("AudioPause(%d)", param[0]);
+                        CDPumpPause(param[0] != 0);
+                        break;
+                    case kcsAudioStop:
+                        CDProgressSay("AudioStop");
+                        CDPumpStop();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        CDPumpIdle();
+
+        {
+            Boolean playing;
+            long    ur, delivered;
+            CDPumpStats(&playing, &ur, &delivered);
+            pub->pumpPlaying   = playing ? 1 : 0;
+            pub->pumpUnderruns = ur;
+            if (playing && (delivered >> 18) != reported) {
+                reported = delivered >> 18;
+                CDProgressSay("playing: %ld KB delivered, %ld underruns",
+                              delivered / 1024, ur);
+            }
+        }
+
+        /* A short sleep so the foreground application still gets time, but short
+         * enough that the ring is topped up many times a second. */
+        if (WaitNextEvent(mDownMask | keyDownMask, &evt, 1, NULL)) {
+            if (evt.what == mouseDown || evt.what == keyDown) break;
+        }
+    }
+
+    CDPumpStop();
+    pub->pumpAlive = 0;
+    CDLogf("=== pump stopped ===");
+}
+
+#define kVersionString  "CDPump v1"
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
 #define kEnginePEFID    128
 
@@ -332,6 +432,25 @@ int main(void)
     } else if (commit || undo) {
         CDLogf("  ⇒ refusing to %s: validation did not pass (%s)",
                undo ? "unpatch" : "patch", StatusText(gInfo.status));
+    }
+
+    /* --- 6. become the pump --- */
+    if (commit && gInfo.patched && gInfo.status == kEngineOK && gInfo.pubBlock != NULL) {
+        CDDriverInfo cd;
+        OSErr        perr;
+
+        memset(&cd, 0, sizeof(cd));
+        CDFindDriver(&cd, false);          /* for the drive number */
+        CDLogStep("CDPumpInit(refNum=%d drive=%d)", gInfo.cdRefNum, cd.driveNum);
+        perr = CDPumpInit(gInfo.cdRefNum, cd.driveNum);
+        CDLogf("  CDPumpInit err=%d", perr);
+        if (perr == noErr) {
+            PumpLoop((CDEnginePublic *)gInfo.pubBlock, gInfo.cdRefNum);
+        } else {
+            CDLogf("  ⇒ the pump could not start, so nothing will play. The patch is");
+            CDLogf("    still installed and harmless.");
+            CDProgressSay("PUMP FAILED err=%d", perr);
+        }
     }
 
     CDLogf("  NOTE: run this once per boot. A second run prepares a second fragment.");
