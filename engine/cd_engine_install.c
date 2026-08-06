@@ -144,9 +144,20 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
         }
     }
 
+    {
+        Boolean playing;
+        long    ur = 0, delivered = 0;
+        CDPumpStats(&playing, &ur, &delivered);
+        CDLogf("=== pump stopped: %ld KB delivered, %ld underruns ===",
+               delivered / 1024, ur);
+        if (ur == 0 && delivered > 0)
+            CDLogf("  ⇒ zero underruns: the ring and the event-loop refill kept up.");
+        else if (ur > 0)
+            CDLogf("  ⇒ %ld underruns = audible gaps. Dials, cheapest first: a bigger "
+                   "ring, then larger reads per refill.", ur);
+    }
     CDPumpStop();
     pub->pumpAlive = 0;
-    CDLogf("=== pump stopped ===");
 }
 
 #define kVersionString  "CDPump v1"

@@ -539,10 +539,20 @@ int main(void)
         CDLogf("  ⇒ H1 CONFIRMED: the driver accepts the legacy audio calls but "
                "there is no route to the speakers. Interception + DAE is the "
                "right design.");
-    if (gP.playErr == noErr && answer == 1)
-        CDLogf("  ⇒ the analog path WORKS on this machine. Expected on a Mac with "
-               "the CD-audio wire (the control case); if this is the mini, the "
-               "project premise needs revisiting.");
+    if (gP.playErr == noErr && answer == 1) {
+        CDLogf("  ⇒ MUSIC WAS AUDIBLE. Two very different causes, and the transport");
+        CDLogf("    position above distinguishes them:");
+        CDLogf("      position MOVED   ⇒ the drive is really transporting, so this Mac");
+        CDLogf("                         has a working analog CD-audio path (the");
+        CDLogf("                         known-good control case, e.g. the MDD).");
+        CDLogf("      position FROZEN  ⇒ the drive is NOT transporting, so the sound");
+        CDLogf("                         cannot be coming from it. On the G4 mini that");
+        CDLogf("                         means the CD Audio Redirector is working:");
+        CDLogf("                         our patch caught AudioPlay and the pump is");
+        CDLogf("                         streaming the track digitally.");
+        CDLogf("    (This probe predates the redirector; before it existed, audible");
+        CDLogf("     music could only have meant the analog path.)");
+    }
     if (gP.playErr != noErr)
         CDLogf("  ⇒ H2: playback was never accepted, so audibility says nothing.");
 

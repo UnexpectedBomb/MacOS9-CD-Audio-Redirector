@@ -1227,3 +1227,76 @@ mode than anything the 68K generation had.
 `AudioStatus`/`ReadQ` synthesis. The game still sees the driver's frozen position, so music
 will play but will not loop. Now that the pump owns the playback cursor, synthesis needs a
 route back from pump to handler — the mailbox in reverse — which is the next piece.
+
+---
+
+# ★★ IT WORKS — 2026-08-06. Music from a legacy AudioPlay on a Mac with no analog CD-audio path
+
+`CDPump_v1` + `CDPlayProbe_v2`, G4 mini, pressed audio CD. Logs archived as
+`logs/2026-08-06-WORKING-*`.
+
+```
+patch returned 0, status=0, patched=1
+CDPumpInit err=0
+=== PUMP RUNNING ===
+--- request 3: csCode 104 ---            (AudioPlay)
+  pump: play LBA 0 .. 14564 (14564 sectors, 194 s)
+  pump: pre-roll 352800 bytes
+  pump: SndPlayDoubleBuffer err=0
+--- request 4: csCode 105 ---            (AudioPause: pause)
+--- request 5: csCode 105 ---            (AudioPause: resume)
+--- request 6: csCode 106 ---            (AudioStop)
+
+CDPlayProbe_v2:  user reported: MUSIC WAS AUDIBLE
+```
+
+Every stage of the chain is visible: the probe issued the legacy `AudioPlay` that a
+mixed-mode game issues → our patched Control descriptor caught it → the handler posted it
+to the mailbox → the pump decoded it, resolved track 1 to **LBA 0…14564** (exactly track 1's
+start to track 2's start, 194 s), pre-rolled the full 2-second ring, and started
+`SndPlayDoubleBuffer` → **audible music**. Pause, resume and stop all arrived and were
+serviced.
+
+## Why this is definitely ours and not the analog path
+
+Three independent reasons:
+
+1. **The same probe, same machine, same disc produced SILENCE in Phase 0.** The only thing
+   that changed is our software.
+2. **The drive is not transporting.** The probe reports `reported status did NOT change over
+   10 s` — the transport position is frozen, so the drive is not playing the disc. Sound
+   cannot be coming from it.
+3. Phase 0 established this driver "accepts and ignores" the transport commands, which is
+   why the position never moves.
+
+Drive stationary + music audible = the audio is coming from our DAE + Sound Manager path.
+
+## What this validates, cumulatively
+
+| Established | Where |
+|---|---|
+| CD-DA is readable through the driver | Phase 0 P4 |
+| `'sowt'`, no byte swap; streaming holds at real time | Phase 1 |
+| The ATAPI driver can be interposed safely, coexisting with iTunes and Audio CD Access | Phase 2 Steps 3–4 |
+| The legacy `AudioPlay` can be caught and serviced with real audio | **Step 5b, here** |
+
+## Two housekeeping fixes made immediately
+
+- **`CDPlayProbe`'s conclusion text was stale and actively misleading.** Written in Phase 0,
+  it said audible music meant "the analog path works, and if this is the mini the project
+  premise needs revisiting" — the exact opposite of what it now means. It now branches on
+  the transport position: moved ⇒ analog path (the MDD control case), frozen ⇒ the
+  redirector is working.
+- **The pump only put its underrun count on screen, never in the log.** Now logged at stop,
+  with the dials to turn if it is non-zero.
+
+## What remains before Jubadub can verify it
+
+1. **`AudioStatus`/`ReadQ` synthesis.** Confirmed still outstanding — the probe saw a frozen
+   position throughout. Music plays; a game polling for track end will not loop or advance.
+   The pump owns the cursor now, so this needs the mailbox in reverse.
+2. **Faceless Startup-Items packaging** (SIZE flags 0x14C0). Packaging, not new mechanism.
+3. **A real mixed-mode game disc.** Everything so far is a pressed audio CD. Track 1 being
+   data, the game issuing the calls, and whether an audio session mounts alongside the HFS
+   volume are all untested. That is precisely what Jubadub's run settles.
+4. A README a third party can follow, then the forum post.
