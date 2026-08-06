@@ -133,6 +133,10 @@ typedef struct {
     OSErr    gestaltReplaceErr;
     OSErr    gestaltSetErr;
     short    gestaltPublished;  /* 1 if any of the three worked                 */
+
+    /* Step 5a */
+    short    driveNum;          /* for driver-level CD-DA reads                 */
+    OSErr    audioInitErr;      /* ring/buffers/channel/TOC setup               */
 } CDEngineInfo;
 
 /* Trace ring entry, same shape the 68K generation used — the field that mattered was

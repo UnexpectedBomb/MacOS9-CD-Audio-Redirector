@@ -49,7 +49,7 @@
 #include "cd_probe_common.h"
 #include "cd_engine.h"
 
-#define kVersionString  "CDEngineInstall v2"
+#define kVersionString  "CDEngineInstall v3"
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
 #define kEnginePEFID    128
 
@@ -261,6 +261,10 @@ int main(void)
            (unsigned long)gInfo.ourCode, (unsigned long)gInfo.ourTOC);
     CDLogf("  ring=0x%08lX entries=%ld  patched=%d",
            (unsigned long)gInfo.ring, gInfo.ringEntries, gInfo.patched);
+    CDLogf("  driveNum=%d  audioInitErr=%d %s", gInfo.driveNum, gInfo.audioInitErr,
+           gInfo.audioInitErr == noErr
+             ? "(ring, double buffers, sound channel and TOC are ready)"
+             : "(NO AUDIO: interception will still work, but nothing will play)");
     CDLogf("  published block = 0x%08lX", (unsigned long)gInfo.pubBlock);
     CDLogf("  Gestalt registration: NewGestaltValue=%d ReplaceGestaltValue=%d "
            "SetGestaltValue=%d  (1 = not attempted)",
@@ -314,8 +318,9 @@ int main(void)
                        (unsigned long)gInfo.ourTVector,
                        (unsigned long)gInfo.origTVector);
                 CDLogf("    from now on goes through our handler and is chained on.");
-                CDLogf("  ⇒ NOW TEST COEXISTENCE: does iTunes still read the audio CD,");
-                CDLogf("    and does CDRecon_v2 still show the 'Audio CD 1' volume?");
+                CDLogf("  ⇒ NOW RUN CDPlayProbe_v2 AND LISTEN. It issues the legacy");
+                CDLogf("    AudioPlay that a game issues, which previously produced");
+                CDLogf("    SILENCE. If music comes out, the whole chain works.");
                 CDProgressSay("PATCHED - now test iTunes and CDRecon");
             } else {
                 CDLogf("  ⇒ the patch did NOT take. Nothing should have changed; the");

@@ -32,10 +32,10 @@ resource 'SIZE' (-1) {
 
 resource 'vers' (1, "CDEngineInstall") {
     0x00,
-    0x20,                   /* 2.0 */
+    0x30,                   /* 3.0 */
     development,
     0x01,
     verUS,
-    "2.0d1",
-    "2.0d1, CD Audio Redirector Step-2 engine residency + validation"
+    "3.0d1",
+    "3.0d1, CD Audio Redirector Step-2 engine residency + validation"
 };

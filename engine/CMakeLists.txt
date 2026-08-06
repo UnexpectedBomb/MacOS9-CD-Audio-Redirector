@@ -12,7 +12,7 @@ project(CDEngine C)
 # Two products:
 #   cd_engine.pef      the resident engine, shaped as a native driver so
 #                      GetDriverMemoryFragment accepts it
-#   CDEngineInstall_v2 a PPC app that embeds that PEF, holds its closure, and calls
+#   CDEngineInstall_v3 a PPC app that embeds that PEF, holds its closure, and calls
 #                      its DoDriverIO to validate
 #
 # The 68K generation (patch/) is retired: a 68K DRVR shell plus tail jump worked on the
@@ -27,7 +27,7 @@ add_compile_options(-Wno-multichar -Wall)
 # A native driver must have DoDriverIO BOTH exported AND as the fragment `main`.
 # The linker's -e would drop it from the export table, so we export normally and
 # patch `main` afterwards — same recipe the eSATA driver uses.
-add_library(cd_engine SHARED cd_engine_driver.c)
+add_library(cd_engine SHARED cd_engine_driver.c cd_engine_audio.c)
 set_target_properties(cd_engine PROPERTIES
     LINK_FLAGS "-Wl,-bE:${CMAKE_CURRENT_SOURCE_DIR}/cd_engine.exp")
 target_include_directories(cd_engine PRIVATE
@@ -48,39 +48,39 @@ add_custom_command(OUTPUT engine_pef.r
     DEPENDS cd_engine.pef ${CMAKE_CURRENT_SOURCE_DIR}/embed-pef.sh)
 
 # --- the installer app ---
-add_application(CDEngineInstall_v2
+add_application(CDEngineInstall_v3
     cd_engine_install.c
     ../probes/common/cd_probe_common.c
     cd_engine_install.r
     ${CMAKE_CURRENT_BINARY_DIR}/engine_pef.r
     TYPE     "APPL"
     CREATOR  "CDei")
-target_include_directories(CDEngineInstall_v2 PRIVATE
+target_include_directories(CDEngineInstall_v3 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../probes/common)
 # DriverLoaderLib supplies GetDriverMemoryFragment / SetDriverClosureMemory.
-target_link_libraries(CDEngineInstall_v2 DriverLoaderLib InterfaceLib)
+target_link_libraries(CDEngineInstall_v3 DriverLoaderLib InterfaceLib)
 
 if(TARGET retrocrt)
     add_dependencies(cd_engine retrocrt)
-    add_dependencies(CDEngineInstall_v2 retrocrt)
+    add_dependencies(CDEngineInstall_v3 retrocrt)
 endif()
 
 set(WRAP_APM $ENV{HOME}/Developer/claude-os9/client/scripts/wrap-apm.py)
 add_custom_command(
-    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v2.img
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v3.img
     COMMAND /usr/bin/env python3 ${WRAP_APM}
-            ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v2.dsk
-            ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v2.img
-            CDEngineInstall_v2
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v2.dsk ${WRAP_APM}
-    COMMENT "Wrapping CDEngineInstall_v2.dsk -> .img" VERBATIM)
-add_custom_target(CDEngineInstall_v2_disk ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v2.img)
-add_dependencies(CDEngineInstall_v2_disk CDEngineInstall_v2_APPL)
+            ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v3.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v3.img
+            CDEngineInstall_v3
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v3.dsk ${WRAP_APM}
+    COMMENT "Wrapping CDEngineInstall_v3.dsk -> .img" VERBATIM)
+add_custom_target(CDEngineInstall_v3_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDEngineInstall_v3.img)
+add_dependencies(CDEngineInstall_v3_disk CDEngineInstall_v3_APPL)
 
-add_custom_command(TARGET CDEngineInstall_v2_disk POST_BUILD
+add_custom_command(TARGET CDEngineInstall_v3_disk POST_BUILD
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
             ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Pushing CDEngineInstall_v2 to pi3.local" VERBATIM)
+    COMMENT "Pushing CDEngineInstall_v3 to pi3.local" VERBATIM)

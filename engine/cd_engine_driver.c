@@ -29,7 +29,20 @@
 #include "cd_engine.h"
 #include "cd_cscodes.h"
 
+/* Step 5a: the audio engine (cd_engine_audio.c). */
+extern OSErr   CDAudioInit(short refNum, short driveNum);
+extern OSErr   CDAudioPlayLBA(long startLBA, long endLBA);
+extern void    CDAudioStop(void);
+extern void    CDAudioPause(Boolean pause);
+extern void    CDAudioSetVolume(unsigned char l, unsigned char r);
+extern void    CDAudioRefill(void);
+extern Boolean CDAudioDecodePos(const unsigned char *csParam,
+                                long *startLBA, long *endLBA);
+extern Boolean CDAudioInSelfCall(void);
+extern void    CDAudioStats(long *underruns, long *delivered, Boolean *playing);
+
 /* Low-memory globals by absolute address, as everywhere else in this project. */
+#define LM_DrvQHdr          ((QHdrPtr)0x0308)
 #define LM_UTableBase       (*(Ptr *)0x011C)
 #define LM_UnitEntryCount   (*(short *)0x01D2)
 /* ApplicZone() is not in the PowerPC import libs for this toolchain, so the
@@ -115,6 +128,14 @@ static Boolean              gPatched    = false;
  * whatever the original does about jIODone for a queued request, it keeps doing. */
 OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
 {
+    /* ★ Our own I/O re-enters here — the engine reads the TOC and changes the block
+     * size on the very driver whose Control entry we hold. Pass it straight through
+     * without interpreting it, or a refill would recurse into itself. */
+    if (CDAudioInSelfCall()) {
+        if (gOrigCtl == NULL) return controlErr;
+        return gOrigCtl(pb, dce);
+    }
+
     if (gRing != NULL && gPub != NULL && pb != NULL) {
         CDEngineTrace *e = &gRing[gPub->writeCount & (kEngineRingEntries - 1)];
         short          cs = ((CntrlParam *)pb)->csCode;
@@ -136,6 +157,50 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
         /* Incremented LAST, so a reader never sees a slot count that outruns its
          * contents. Plain stores throughout: this may be interrupt time. */
         gPub->writeCount++;
+    }
+
+    /* ★ SIDE EFFECTS ONLY, THEN ALWAYS CHAIN.
+     *
+     * We add audio and let the original driver answer the request exactly as it does
+     * today. It "accepts and ignores" every transport csCode (Phase 0), so nothing is
+     * lost by letting it run — and we never have to reproduce the queued-request
+     * completion protocol, which Phase 2a measured AudioStatus and ReadQ needing.
+     *
+     * These handlers issue I/O of their own, so they must be at task level. A game's
+     * PBControlSync is; if one ever arrives at interrupt time the reads would spin
+     * there, which is the known limitation to revisit if a real game shows it. */
+    if (pb != NULL && gPub != NULL && gPub->patched) {
+        short cs = ((CntrlParam *)pb)->csCode;
+        const unsigned char *cp = (const unsigned char *)((CntrlParam *)pb)->csParam;
+
+        switch (cs) {
+            case kcsAudioPlay: {
+                long a, b;
+                if (CDAudioDecodePos(cp, &a, &b)) (void)CDAudioPlayLBA(a, b);
+                break;
+            }
+            case kcsAudioTrackSearch: {
+                long a, b;
+                /* csParam+6 non-zero means "hold at the position" rather than play. */
+                if (CDAudioDecodePos(cp, &a, &b) && cp[6] == 0)
+                    (void)CDAudioPlayLBA(a, b);
+                break;
+            }
+            case kcsAudioPause:
+                CDAudioPause(cp[0] != 0);
+                break;
+            case kcsAudioStop:
+                CDAudioStop();
+                break;
+            case kcsAudioControl:
+                CDAudioSetVolume(cp[0], cp[1]);
+                break;
+            case kcsAccRun:
+                CDAudioRefill();
+                break;
+            default:
+                break;
+        }
     }
 
     if (gOrigCtl == NULL) return controlErr;
@@ -357,7 +422,23 @@ static OSErr EngineInit(CDEngineInfo *info)
     gSavedTV = rd->routineRecords[0].procDescriptor;
     gInfo    = info;
 
-    /* ★ Deliberately NOT writing rd[kRDTVectorOffset..]. Step 3 does that. */
+    /* Step 5a: bring the audio engine up now, at task level — ring, double buffers,
+     * the sound channel (with the SYSTEM zone current so it is not owned by whatever
+     * application is frontmost) and the TOC. Doing it here means AudioPlay has only to
+     * seek and start. A failure is recorded but does not block the patch: interception
+     * without audio is still strictly better than the unpatched state. */
+    {
+        short dnum = 0;
+        DrvQElPtr q = (DrvQElPtr)LM_DrvQHdr->qHead;
+        while (q != NULL) {
+            if (q->dQRefNum == refNum) { dnum = q->dQDrive; break; }
+            q = (DrvQElPtr)q->qLink;
+        }
+        info->audioInitErr = CDAudioInit(refNum, dnum);
+        info->driveNum     = dnum;
+    }
+
+    /* ★ Deliberately NOT writing the descriptor here. The patch command does that. */
     return noErr;
 }
 

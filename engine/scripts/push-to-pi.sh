@@ -7,7 +7,7 @@ set -u
 BUILD_DIR="${1:-$(dirname "$0")/../build}"
 PI=claude@pi3.local
 SHARE=/home/csell/shared
-BASES="CDEngineInstall_v2"
+BASES="CDEngineInstall_v3"
 
 if ! ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
         "${PI}" true 2>/dev/null; then

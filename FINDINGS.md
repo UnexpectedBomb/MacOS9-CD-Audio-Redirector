@@ -1054,3 +1054,75 @@ refill, comfortable against 32-sector reads) and restore it on stop.
 iTunes uses DAE, not `AudioPlay`. **`CDPlayProbe_v2` does** — which makes it the
 stand-in for a game until a real mixed-mode disc is available, and the natural way to
 drive Step 5 end to end.
+
+# Step 5a — the audio engine (built 2026-08-06, not yet run)
+
+`CDEngineInstall_v3`. The Phase-1 playback engine, moved inside the resident PowerPC
+engine and driven from the patched Control entry.
+
+## The design decision that makes this safe: side effects only, always chain
+
+For **every** csCode, including the ones we act on, the original driver is still called
+and its result is still returned. We add audio; we never take responsibility for
+completing a request.
+
+That sidesteps the one piece of mechanism I could not verify by reading: Phase 2a measured
+`AudioStatus` and `ReadQ` arriving **queued**, and a queued request must end at `jIODone`
+rather than simply returning. Reproducing that completion protocol from PowerPC is
+guesswork. Since the transport csCodes are ones this driver "accepts and ignores" anyway
+(Phase 0), letting it run costs nothing and the audio is pure addition.
+
+**⇒ Consequence, stated plainly: Step 5a will play music but will not loop.** A game
+polling `AudioStatus` for track end still sees the driver's frozen position. Synthesis is
+Step 5b, and it needs one fact this run supplies for free — whether chaining a *queued*
+call returns to us at all. If it does, 5b is chain-then-rewrite-`csParam`. If not, 5b
+needs a real completion path.
+
+## What happens on each csCode
+
+| csCode | side effect | then |
+|---|---|---|
+| 104 AudioPlay | decode position → start streaming from that LBA | chain |
+| 103 AudioTrackSearch | same, unless the hold flag at csParam+6 is set | chain |
+| 105 AudioPause | pause/resume the channel | chain |
+| 106 AudioStop | stop, restore block size and `dCtlDelay` | chain |
+| 109 AudioControl | record volume (scaling is 5b) | chain |
+| 65 accRun | refill the ring | chain |
+| anything else | — | chain |
+
+## Details that come from measurement rather than assumption
+
+- **`accRun` is the refill pump, and `dCtlDelay` is shortened to 6 ticks while playing**
+  (~10 Hz, ~17.6 KB per refill). Measured last run: `accRun` arrives every 120 ticks =
+  2.0 s, which would starve a 2-second ring continuously. Restored on stop.
+- **The sound channel is allocated once at install with the SYSTEM zone current.** A
+  channel allocated from driver context would otherwise land in whatever application is
+  frontmost and vanish when it quits — the hazard REVIEW.md §5 flagged.
+- **The TOC is read at install**, at task level, so `AudioPlay` only has to seek and start.
+- **`'sowt'` and `notCompressed`**, both confirmed by Phase 1 on this hardware. No byte
+  swap anywhere.
+- **Block size is restored around every read.** 2352 is wrong for data reads, so leaving it
+  set for the duration of playback would break a game reading level data from track 1.
+  ⚠ A data read landing *inside* a refill window would still see the wrong size; that race
+  is documented, not solved, and removing it entirely needs the ATA (`'dvrf'`) route.
+- **Re-entrancy**: the engine issues TOC reads and block-size changes to the very driver
+  it has patched, so `gInSelfCall` makes the handler pass its own traffic straight through.
+- **The doubleback proc** copies from a pre-allocated ring, emits silence on underrun, and
+  never allocates, blocks or touches the File Manager.
+
+## Known limitation to watch for
+
+The transport handlers issue synchronous I/O, so they assume task level. A game's
+`PBControlSync` is task level; if one ever arrives at interrupt time the reads would spin
+there. Flagged rather than defended against, since no observed caller does it.
+
+## The test, and why it needs no game disc
+
+`audioCallCount` was 0 last run because nothing on the machine issues these csCodes —
+iTunes uses DAE. **`CDPlayProbe_v2` issues them**: `AudioPlay`, status polling, pause,
+resume, stop. It produced **silence** in Phase 0 against the unpatched driver. So:
+
+> patch → run `CDPlayProbe_v2` → **listen**
+
+Music where there was silence is the entire project demonstrated, on an ordinary audio CD,
+before Jubadub ever sees it.
