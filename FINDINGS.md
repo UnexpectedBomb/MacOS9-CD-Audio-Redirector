@@ -1707,10 +1707,101 @@ a chain, safe at any interrupt level.
 time. Recorded because the temptation to write "the CD driver is −66" into a doc or a test
 instruction is real, and it would be wrong two times in three.
 
-## Something other than our probe issues legacy audio calls
+## Something other than our probe issues legacy audio calls (2026-08-06d)
 
 `request 1: csCode 106` (`AudioStop`) arrives on its own, right after `PUMP RUNNING` and
 before the probe was launched — almost certainly the Finder or the CD Remote machinery on
 disc insertion. Harmless (a stop on an idle pump does nothing), and it quietly amends the
 earlier note that `audioCallCount = 0` because *nothing* on the machine uses the legacy audio
 API. Something does, on the disc-insertion path.
+
+# Run 2026-08-06e: `CDAudioRedirector_v2` — the ring works, and the machine crashed
+
+Two separate results in one run, and they must not be conflated.
+
+⚠ **Reading note:** `CD Audio Redirector Log` was not deleted before this run, so it holds
+**two** sessions. The crash is the **first** (line 3); the second (line 157) is the reboot
+*after* the crash and shows only `PUMP RUNNING` with no probe activity. Reading the last
+banner — the usual rule — gives the wrong session here.
+
+## ✅ The request ring works. Requests arrive consecutively for the first time
+
+```
+--- request 0: csCode 109 ---     AudioControl (volume)
+--- request 1: csCode 103 ---     AudioTrackSearch
+  hold flag set; positioning only, not playing
+--- request 2: csCode 104 ---     AudioPlay
+```
+
+**0, 1, 2 with no gaps.** That was the stated discriminator and it passed. In every previous
+run the volume call and the TrackSearch were silently swallowed — the numbers always skipped.
+The single-slot mailbox was losing exactly what the analysis said it was losing, and the ring
+fixed it.
+
+Note also that request 1 is correctly recognised as `AudioTrackSearch` **with the hold flag
+set**, so it positions without playing. That branch had never been exercised before, because
+the call that reaches it had always been one of the dropped ones.
+
+## ✅ The TOC re-read caught a genuinely bogus startup TOC
+
+At `CDPumpInit` the drive reported **one** track and a lead-out of 73:40:66. The disc actually
+has 16 tracks and a lead-out of 75:23:02 — the drive answered before it had really read the
+disc. `EnsureTOC` re-read at play time and got the true 16-track TOC, and the play range was
+clamped correctly to `LBA 0 .. 13922` by track 2's start.
+
+Under the old read-once code the pump would have spent the whole session believing in a
+one-track disc. This is the second distinct failure the TOC re-read has now absorbed.
+
+## ⚠ THE CRASH — unexplained, and NOT yet attributed
+
+The machine died roughly 3.5 s after `AudioPlay`: about 1.5 s of pre-roll, then 1.6 s of
+playback. The probe's log stops mid-call:
+
+```
+  poll 6 (t=23453 ticks)
+STEP Status csCode=107 refNum=-57     -> answered, synthesised 11 00 00 00 03 37
+STEP Status csCode=101 refNum=-57     <- last line in the file, no result
+```
+
+Synthesis was working right up to the end: poll 5 reported abs MSF 00:03:18 (LBA 93, 1.24 s)
+and poll 6 reported 00:03:37 (LBA 112, 1.49 s), advancing correctly.
+
+The pump's own log ends after the two `ORIGINAL ...` captures, which is **expected** — the
+pump logs nothing between requests — so the pump's silence is not evidence of where it died.
+
+### What has been ruled out
+
+- **A stale engine PEF.** The obvious suspect, since a resident fragment built against the old
+  `CDEnginePublic` would write the ring beyond a smaller allocation and corrupt the heap —
+  which would look exactly like this. It is not what happened: the PEF is newer than the
+  header that changed, and the resident engine reported `version=2` in the crash log itself.
+- **The pump and shared code.** `cd_pump_audio.c` and `cd_probe_common.c` are byte-identical
+  between the working v1 and the crashing v2 (`git diff d9377b4..HEAD`). The only code that
+  changed is the ring producer, the ring consumer, and version strings.
+- **The probe's new struct handling.** It runs only after `Cleanup`, long after poll 6.
+
+### What has not been ruled out
+
+- **The ring itself.** It is the main thing that changed. Reviewing the producer and consumer
+  has not turned up a memory-safety defect — the producer is still plain aligned stores, the
+  index masks to 0..15, and the overflow branch terminates — but "I could not find the bug"
+  is not "there is no bug".
+- **The environment.** `EHCIUIM_init.log`, `USB Disk Log` and `USB2 Activate Log` are on the
+  share from earlier the same afternoon, so the **experimental USB 2.0 EHCI stack was also
+  live on this machine**. Two experimental drivers, one of them doing bus-master DMA, while
+  our pump hammers the ATAPI bus. That is a variable, not an accusation.
+- **The disc or drive.** The same drive returned a fabricated one-track TOC at startup in this
+  very run, which is not a healthy answer.
+
+### The next run is the control, not a fix
+
+Project rule, learned the expensive way: run the known-good control first when a regression
+appears. `CDAudioRedirector_v1` and `CDPlayProbe_v3` are still on the share and are a matched
+engine-version-1 pair. Running them on this machine, in this state, with this disc splits the
+question cleanly:
+
+- **crashes too** ⇒ not the ring; the cause is environmental (USB2, drive, disc) and the ring
+  change is exonerated;
+- **does not crash** ⇒ the ring is implicated and gets instrumented rather than guessed at.
+
+Shipping a speculative fix before that run would repeat the two-wrong-ROMs mistake.
