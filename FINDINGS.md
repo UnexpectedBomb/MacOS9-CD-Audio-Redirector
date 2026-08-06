@@ -1126,3 +1126,58 @@ resume, stop. It produced **silence** in Phase 0 against the unpatched driver. S
 
 Music where there was silence is the entire project demonstrated, on an ordinary audio CD,
 before Jubadub ever sees it.
+
+## Step 5a run 1 — DEADLOCK. You cannot do synchronous driver I/O from inside that driver's Control entry
+
+```
+CDPlayProbe_v2 log, final line:
+  STEP Control csCode=104 refNum=-66        ← written before PBControlSync; never returned
+
+CDEngineInstall_v3 log:
+  driveNum=4  audioInitErr=0 (ring, double buffers, sound channel and TOC are ready)
+  Gestalt registration: NewGestaltValue=-5552 ReplaceGestaltValue=0
+```
+
+`AudioTrackSearch` (103) returned `err=0` because CDPlayProbe sets the hold flag at
+csParam+6, so the handler chained without starting playback. **`AudioPlay` (104) froze
+inside our handler.**
+
+### The proof is the contrast with install time
+
+`audioInitErr=0` means the *same* operations — `ChangeBlockSize`, `ReadTOC`, driver reads —
+succeeded at install. The difference is only *where they ran from*: install runs in the
+installer application's own context, while the AudioPlay handler runs **inside the
+driver's Control entry**.
+
+The Device Manager serialises I/O per DCE. A synchronous `PBRead`/`PBControl` issued from
+inside a Control call cannot begin until that Control call completes, and the Control call
+is waiting for the I/O. Self-deadlock, and the very first nested call is enough. Both the
+`AudioPlay` pre-fill and the `accRun` refill were built on that impossibility.
+
+### ⇒ The audio cannot live inside the handler. It has to live in a task-level pump.
+
+Three ways out, and only one is sound:
+
+1. **Async I/O from the handler** — issue `PBReadAsync`, return, chain completions at
+   interrupt time. Avoids the deadlock but builds an async state machine whose completion
+   routines issue further I/O at interrupt level: precisely the class of thing that has
+   cost this project the most.
+2. **Do it at `accRun`** — no better. `accRun` is *also* delivered as a Control call, so it
+   deadlocks identically.
+3. **A task-level pump outside the driver** — a process that is not inside any Control call
+   does the I/O in its own context, exactly where Phase 1 proved it works.
+
+(3) is the answer, and it converges with the vehicle already required for shipping to
+Jubadub: a Startup-Items application.
+
+### The restructure
+
+| | before | after |
+|---|---|---|
+| driver handler | decode, read, start playback | **write the request into a mailbox, chain. No I/O at all.** |
+| audio engine | inside the resident PEF | in the pump application, reusing the Phase-1 code that already works |
+| TOC decode | engine | pump (so the engine needs no TOC, and its install-time work shrinks to nothing risky) |
+
+The handler becomes trivially safe at any interrupt level — a few stores and a chain — and
+the audio runs where Phase 1 measured 30 seconds with zero underruns. If the pump is not
+running, `AudioPlay` requests are simply unserviced: no crash, safe degradation.
