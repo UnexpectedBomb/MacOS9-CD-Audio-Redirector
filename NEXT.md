@@ -39,7 +39,7 @@ They **append** — read from the last banner.
 
 ## Next steps, in order
 
-### 0. ✅ Re-read the TOC on demand — DONE in `CDPump_v4`, awaiting hardware
+### 0. ✅ Re-read the TOC on demand — DONE in `CDPump_v4`, **PASSED on hardware 2026-08-06c**
 `CDPumpInit` used to read the TOC once and never again, so a faceless Startup-Items app
 launching at boot with an **empty drive** would have had `gTOC.valid` false for the whole
 session and could never have resolved a request.
@@ -60,8 +60,20 @@ Two deliberate choices, both to avoid making things worse than they were:
   at 512, and two Control calls are cheap insurance. On the first play nothing is taken, so
   it costs nothing.
 
-**Not yet run on hardware.** The run that validates it is the empty-drive boot in
-"How to run it" above.
+**Validated.** Booted with an empty tray, launched the pump, *then* inserted the disc: the
+startup TOC read failed cleanly with `err=-65` (no hang), the pump ran anyway, and the first
+play request logged `TOC generation 1` with the full table and played. Two plays produced
+exactly one generation line, so the change suppression works.
+
+**Fold into the packaging build (step 1), both found by that run:**
+- `EnsureTOC` should also refresh **`gDriveNum`**. With an empty tray the CD is absent from
+  the drive queue, so the pump starts with `drive=0` and uses it as `ioVRefNum` on every
+  `PBRead`. It worked here because the read is driver-level and `ioRefNum` selects the driver,
+  but that is now the *default* shipping configuration and it assumes the driver ignores
+  `ioVRefNum`. Another drive may not.
+- The `discovery stage 2 SKIPPED (shift held)` message is wrong — the call site hardcodes
+  `allowFullSweep = false` (`cd_engine_install.c:474`). Say what the code did.
+- Do not assume the CD driver's refNum: it was −66 one boot and −56 the next.
 
 ### 1. Faceless Startup-Items packaging  *(packaging, no new mechanism)*
 Ship as one file the user drops into Startup Items. Hide it from the Application menu with

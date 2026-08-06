@@ -1,0 +1,8 @@
+CD Trace Log is deliberately NOT archived with this run.
+
+The copy on the share was byte-for-byte identical to the previous run's
+(logs/2026-08-06-repeat-play/), so CDTraceRead_v1 was not re-run this boot and
+the file on disc is stale. Archiving it here would have put a previous boot's
+trace into this run's evidence folder.
+
+Nothing was lost: the engine log carries the whole answer for this run.

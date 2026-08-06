@@ -1542,3 +1542,74 @@ Consequences:
   `playState = 3` / status `0x13` path has never executed on hardware.
 - **A disc whose track 1 is data.** `DecodePos` has only ever run against an all-audio TOC.
 - **Data reads contending with music.** The 1.9x figure above says it will be tight.
+
+# Run 2026-08-06c: the empty-drive boot — `CDPump_v4` PASSES
+
+G4 mini. Booted with the **tray empty**, launched `CDPump_v4` with option, *then* inserted the
+pressed audio CD, then ran `CDPlayProbe_v3` twice. Logs in `logs/2026-08-06-empty-drive-boot/`.
+
+This is the run that validates the TOC re-read, and it is deliberately the faceless
+Startup-Items scenario: the pump exists before the disc does.
+
+⚠ **Run validation caught one thing:** the `CD Trace Log` on the share was byte-for-byte
+identical to the previous run's, so `CDTraceRead_v1` was not re-run and that file is stale. It
+is **not** archived with this run (see `NOTE.txt` there). Nothing was lost — the engine log
+carries the whole answer — but it would have been easy to read a previous boot's trace as
+this one's.
+
+## The result
+
+```
+ReadTOC first/last FAILED err=-65 (no disc, or the driver does not implement ReadTOC)
+pump: no TOC at startup (empty drive?) - will re-read on the first play request
+CDPumpInit err=0
+=== PUMP RUNNING ===
+--- request 3: csCode 104 ---
+pump: TOC generation 1 - 15 track(s), 15 audio, first=1 last=15
+   ... full 15-track table ...
+pump: play LBA 0 .. 16230
+```
+
+- **The empty-drive TOC read fails cleanly and fast** with `err=-65` (`offLinErr`). It does
+  not hang, which was the one thing I could not predict — the drive is asked and answers.
+- **`CDPumpInit` returns 0 anyway**, the pump runs, and the patch is live with no disc present.
+- **The disc inserted afterwards is picked up on the first play request**, full table logged
+  as `TOC generation 1`, and music plays. Both probe runs: audible, resident, status changed.
+- **The change suppression works.** Two plays, and **exactly one** `TOC generation` line: the
+  second re-read found the same disc and said nothing, which is what keeps the log readable
+  and the play path cheap.
+- 0 underruns; cursors 10.49 s and 10.24 s, each restarting from zero, so v4 did not regress
+  the re-arm proven in the previous run.
+
+**The shipping blocker is closed.** A faceless app can now start at boot with an empty tray.
+
+## ★ Two things this run exposed that the audio-CD-first runs could not
+
+### 1. The CD driver's refNum is not stable across boots — it was −66, this boot it is −56
+
+Nothing hardcodes it (the engine discovers it at `kInitialize`, and the discovery is what
+found −56), so nothing broke. Worth knowing all the same: **any future code, log
+interpretation or test instruction that assumes −66 is wrong.** The likely cause is that the
+device enumeration order differs when the tray is empty at boot.
+
+### 2. ⚠ `driveNum` is 0 in exactly the configuration we are about to ship
+
+With an empty tray the CD does not appear in the drive queue, so the pump-start discovery
+reports `no driver reported devt=='cdrm'` and `CDPumpInit(refNum=-56 drive=0)`. `gDriveNum`
+is then used as `ioParam.ioVRefNum` on every `PBRead`.
+
+**It worked** — the reads succeeded and the music played, because the read is driver-level and
+`ioRefNum` is what selects the driver. But this is the same "captured once at launch" shape as
+the TOC bug just fixed, it is now the *default* shipping configuration rather than an edge
+case, and it rests on this particular driver ignoring `ioVRefNum`. Jubadub's drive may not.
+
+`EnsureTOC` should refresh `gDriveNum` alongside the TOC. Cheap, and it removes the assumption
+rather than relying on it holding.
+
+### 3. A stale interpretation line, again
+
+The log says `--- discovery stage 2 SKIPPED (shift held) ---`. Shift was **not** held; option
+was. The call site passes `allowFullSweep = false` unconditionally
+(`cd_engine_install.c:474`), so the message names a cause that had nothing to do with it.
+Third instance of the same class in this project — the message must state what the code
+actually did, not why it once did it.
