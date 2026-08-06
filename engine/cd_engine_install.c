@@ -120,6 +120,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 {
     EventRecord evt;
     long        reported = -1;
+    long        lastBeat = 0;       /* playback heartbeat, see below */
 
     if (pub == NULL) return;
     /* Start level with the producer: anything posted before the pump existed was never
@@ -232,6 +233,33 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
                 CDProgressSay("playing: %ld KB delivered, %ld underruns",
                               delivered / 1024, ur);
             }
+
+            /* ★ PLAYBACK HEARTBEAT — instrumentation for the v2 freeze.
+             *
+             * v2 (request ring) froze ~1.6 s into playback; v1 (single-slot mailbox)
+             * ran the identical probe to completion on the same machine and disc. So
+             * the ring is implicated, but reading the code has not shown how — and at
+             * the moment of the freeze the ring is IDLE: the pump has drained
+             * everything, and AudioStatus and ReadQ are never posted to it.
+             *
+             * That contradiction is what this line is for. One log write per second
+             * while playing, and the question it answers is which side stopped:
+             *
+             *   beats stop at the same instant as the probe's last line
+             *       -> the whole machine wedged; look below the application
+             *   beats CONTINUE past the probe's last line
+             *       -> the pump is alive and it is the probe's Status call into the
+             *          driver that never returned; look at the handler, not the ring
+             *
+             * reqR/reqW/drop are here too, so a runaway index shows up as numbers
+             * rather than as a theory. Deliberately cheap: one flushed line a second,
+             * against a play path that already spends 1.5 s pre-rolling. */
+            if (playing && (TickCount() - lastBeat) >= 60) {
+                lastBeat = TickCount();
+                CDLogf("  beat t=%ld  %ldKB  underruns=%ld  reqR=%ld reqW=%ld drop=%ld",
+                       (long)TickCount(), delivered / 1024, ur,
+                       pub->reqRead, pub->reqWrite, pub->reqDropped);
+            }
         }
 
         /* A short sleep so the foreground application still gets time, but short
@@ -278,10 +306,10 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v2"
+#define kVersionString  "CD Audio Redirector v3"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v6"
+#define kVersionString  "CDPump v7"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')

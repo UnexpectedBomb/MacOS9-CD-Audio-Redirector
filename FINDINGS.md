@@ -1805,3 +1805,76 @@ question cleanly:
 - **does not crash** ⇒ the ring is implicated and gets instrumented rather than guessed at.
 
 Shipping a speculative fix before that run would repeat the two-wrong-ROMs mistake.
+
+# Run 2026-08-06f: the v1 control — the ring IS implicated
+
+Same machine, same disc, same session state, `CDAudioRedirector_v1` back in Startup Items.
+Logs in `logs/2026-08-06-v1-control/`.
+
+**It ran to completion.** All 40 polls, music audible, no freeze. Against v2's freeze at poll
+6 on the identical setup, that is as clean an A/B as this project gets.
+
+Two things the control also settled for free:
+
+- **The drop diagnosis is confirmed from the other direction.** v1's request numbers are
+  `3, 4, 5, 6` — it never saw 0, 1 or 2. v2 logged `0, 1, 2` consecutively. The single-slot
+  mailbox really was swallowing the volume call and the TrackSearch, exactly as claimed.
+- **The version guard works.** The probe run was actually `CDPlayProbe_v4` against engine
+  version 1, and it said so rather than printing nonsense:
+  `!! engine reports version 1, this probe was built for 2.` The guard added alongside the
+  ring earned its place on its first exposure. (It also means the control was v1+v4, not
+  v1+v3 — which does not weaken it: the probe only reads the block after `Cleanup`, long
+  after the point where v2 froze.)
+
+**The USB 2.0 stack is exonerated**, as the user judged: it was live for both runs.
+
+## The freeze signature, and why it argues against a wild pointer
+
+Force-quit drew its window **frame with no text and no buttons**. That is not the signature of
+a bus error — that would be a System Error dialog with a type number. A frame with no content
+means the Toolbox got far enough to draw a window and then could not finish: something is
+wedged below the application, not scribbling over it.
+
+## What makes this hard, stated honestly
+
+At the moment of the freeze **the ring is idle**. The pump has drained requests 0, 1 and 2;
+`AudioStatus` and `ReadQ` are not in the posted set, so nothing writes the ring and the drain
+loop's condition is false on every pass. The change that is implicated is not executing when
+the machine dies.
+
+That leaves two shapes of explanation, and the log cannot choose between them:
+
+1. damage done earlier, during requests 0-2, that only surfaces once playback is running;
+2. something about the *steady state* that differs because of the change — including the
+   simple fact that v2 **delivers** two requests v1 threw away, so the pump reaches code paths
+   with the drive in a different state.
+
+Reviewing the producer and consumer has not found a memory-safety defect: the producer is
+plain aligned stores, the index masks to 0..15, the overflow branch terminates. And the
+handler's synthesis was still returning correct advancing positions on the last completed
+poll (00:03:37 = LBA 112 = 1.49 s), which means the handler and the pump agreed on the new
+field offsets — so a layout mismatch is ruled out too.
+
+"I could not find it by reading" is where this project has historically shipped a wrong guess.
+So the next build measures instead.
+
+## `CDAudioRedirector_v3` / `CDPump_v7`: the ring unchanged, plus a heartbeat
+
+One log line per second while playing:
+
+```
+beat t=<ticks>  <N>KB  underruns=<n>  reqR=<r> reqW=<w> drop=<d>
+```
+
+The ring is left exactly as it is, so the freeze should reproduce. The heartbeat answers the
+one question that splits the field:
+
+- **beats stop with the probe's last line** ⇒ the whole machine wedged at once; the cause is
+  below the application and the next look is at the handler and the driver;
+- **beats continue past the probe's last line** ⇒ the pump is alive and it is the probe's
+  `Status` call into the driver that never returned; that points at the interrupt-level
+  handler, not at the ring's bookkeeping.
+
+`reqR`/`reqW`/`drop` ride along so a runaway index appears as a number rather than a theory.
+
+Engine version stays 2, so `CDPlayProbe_v4` and `CDTraceRead_v2` remain the correct partners.
