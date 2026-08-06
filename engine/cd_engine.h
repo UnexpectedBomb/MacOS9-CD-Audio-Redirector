@@ -41,7 +41,9 @@
 #include <MacTypes.h>
 
 #define kEngineMagic    FOUR_CHAR_CODE('CDE1')
-#define kEngineVersion  1
+/* 1 = single-slot request mailbox. 2 = the 16-entry request ring, which moved every
+ * field after it in CDEnginePublic. Readers must check before trusting the layout. */
+#define kEngineVersion  2
 
 /* ★ DO NOT HAND-COUNT OFFSETS INTO A ROUTINE DESCRIPTOR. Use MixedMode.h's real
  * `RoutineDescriptor` / `RoutineRecord` structs.
@@ -173,8 +175,25 @@ typedef struct {
  * readable so a wrong address cannot fault. */
 #define kEngineStateFileName    "\pCD Engine State"
 
+/* One posted request. 16 bytes of csParam is what every audio csCode this engine
+ * services fits in — the same 16 the single-slot mailbox carried. */
+typedef struct {
+    volatile short         csCode;
+    volatile short         reserved;
+    volatile unsigned char param[16];
+} CDEngineRequest;
+
+/* Power of two, so the index masks. 16 entries against a pump that polls every tick is
+ * enormous headroom: the deepest backlog ever observed is 3. It is sized for the case
+ * that has never happened rather than the one that has, because the cost is 320 bytes
+ * and the alternative failure is silent. */
+#define kEngineReqRingEntries   16
+
 typedef struct {
     OSType          magic;          /* kEngineMagic                             */
+    /* ★ 2 = the request ring replaced the single-slot mailbox, which moved every
+     * field below it. A reader built against version 1 will misread this block, so
+     * readers must check. */
     short           version;
     short           patched;        /* 1 while our TVector is in the descriptor */
 
@@ -201,13 +220,36 @@ typedef struct {
      * happens in the pump application, at its own task level, outside any Control call
      * — which is exactly where Phase 1 measured 30 s of streaming with zero underruns.
      *
-     * `reqSeq` is written LAST and read TWICE by the pump (seqlock): if it changed
-     * across the copy, the pump retries. The handler only ever does plain stores, so it
-     * stays safe at any interrupt level. */
-    volatile long   reqSeq;         /* bumped on every new request              */
-    volatile short  reqCsCode;
-    volatile short  reqReserved;
-    volatile unsigned char reqParam[16];   /* csParam as the caller passed it   */
+     * ★ A RING, NOT ONE SLOT — and it is a ring because one slot demonstrably lost
+     * requests on hardware. The 2026-08-06d log skips request numbers (1, 4, 5, 6, 7),
+     * and every earlier run does the same: the pump read whichever request happened to
+     * be in the slot when it next looked, then set `lastSeq` to that sequence number,
+     * stepping over everything that had arrived in between. Silently.
+     *
+     * It stayed harmless only by luck of ordering — the calls being lost were
+     * AudioControl and AudioTrackSearch-with-hold, which the pump ignores anyway.
+     * Nothing protected an AudioPlay, and AudioStop immediately followed by AudioPlay
+     * is precisely how a game restarts a music loop. Losing that one is silence with no
+     * error recorded anywhere, on someone else's machine.
+     *
+     * Single producer (the handler, at any interrupt level), single consumer (the pump,
+     * at task level), so no lock is needed — only ordering:
+     *
+     *   producer  fills reqRing[reqWrite & mask], THEN publishes reqWrite + 1
+     *   consumer  reads while reqRead != reqWrite, THEN publishes reqRead + 1
+     *
+     * Both indices are monotonic longs, never wrapped, so `reqWrite - reqRead` is the
+     * exact backlog and cannot be confused with an empty ring. Aligned long loads and
+     * stores are atomic on PowerPC, which is what keeps the handler safe at interrupt
+     * level: it still does nothing but plain stores.
+     *
+     * If the producer ever laps the consumer it overwrites the OLDEST unread entries.
+     * The consumer detects that (backlog > entries) and counts what it lost in
+     * `reqDropped`, so an overflow can never be the silent thing this replaced. */
+    volatile long   reqWrite;       /* monotonic count of requests POSTED       */
+    volatile long   reqRead;        /* monotonic count CONSUMED (pump writes)   */
+    volatile long   reqDropped;     /* entries overwritten before the pump saw  */
+    CDEngineRequest reqRing[kEngineReqRingEntries];
 
     /* Pump -> engine, purely informational so the trace can show it. */
     volatile short  pumpAlive;

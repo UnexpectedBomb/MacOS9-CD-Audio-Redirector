@@ -14,30 +14,34 @@ The mechanism is **complete**. What remains is packaging and validation against 
 
 | Artifact | What it is |
 |---|---|
-| **`CDAudioRedirector_v1`** | ★ **The shipping artifact.** Same code as CDPump, faceless: drops into Startup Items, patches with no key held, opens no window, runs until shutdown. Log: `CD Audio Redirector Log` |
-| **`CDPump_v5`** | The diagnostic build of the same source. Progress window, needs option to patch, stops on a click. Log: `CD Engine Log` |
-| `CDPump_v4` | Previous build, kept on the share as the known-good control |
-| `CDPlayProbe_v3` | Stands in for a game — issues the legacy audio calls, asks if you heard music |
-| `CDTraceRead_v1` | Reads the engine's trace ring via `Gestalt('CDau')` |
+| **`CDAudioRedirector_v2`** | ★ **The shipping artifact.** Same code as CDPump, faceless: drops into Startup Items, patches with no key held, opens no window, runs until shutdown. Log: `CD Audio Redirector Log` |
+| **`CDPump_v6`** | The diagnostic build of the same source. Progress window, needs option to patch, stops on a click. Log: `CD Engine Log` |
+| **`CDPlayProbe_v4`** | Stands in for a game — issues the legacy audio calls, asks if you heard music |
+| **`CDTraceRead_v2`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
 | `CDAudioSpike_v1` | The standalone Phase-1 DAE → Sound Manager spike |
+| `CDAudioRedirector_v1`, `CDPump_v4/v5` | Superseded; kept on the share as known-good controls |
+
+⚠ **`CDPlayProbe_v3` and `CDTraceRead_v1` are still on the share and are now WRONG** — built
+against engine version 1 and its old field layout. They refuse with a version mismatch rather
+than mislead, but delete them so the right file is the obvious one to pick.
 
 ## How to run it
 
-**The shipping artifact** (`CDAudioRedirector_v1`) — this is now the primary path:
+**The shipping artifact** (`CDAudioRedirector_v2`) — this is now the primary path:
 
-1. Put it in `System Folder:Startup Items:`. Reboot **with the drive empty**.
+1. Put it in `System Folder:Startup Items:` (remove any earlier copy first). Reboot **with the drive empty**.
    Nothing visible should happen; it must not appear in the Application menu.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v3`**. Expect music and `the CD Audio Redirector IS resident`.
+3. Run **`CDPlayProbe_v4`**. Expect music and `the CD Audio Redirector IS resident`.
 4. Evidence is `CD Audio Redirector Log` in the System Folder.
 
-**The diagnostic build** (`CDPump_v5`), when you want the window and manual control:
+**The diagnostic build** (`CDPump_v6`), when you want the window and manual control:
 
 1. Reboot with the drive empty. 2. Launch it **holding option** and leave it open.
-3. Insert an audio CD. 4. Run `CDPlayProbe_v3`. 5. Click the pump window to stop;
-`CDTraceRead_v1` shows the trace. Evidence is `CD Engine Log`.
+3. Insert an audio CD. 4. Run `CDPlayProbe_v4`. 5. Click the pump window to stop;
+`CDTraceRead_v2` shows the trace. Evidence is `CD Engine Log`.
 
 Logs land in the System Folder: `CD Engine Log`, `CD Play Probe Log`, `CD Trace Log`.
 They **append** — read from the last banner.
@@ -72,7 +76,7 @@ startup TOC read failed cleanly with `err=-65` (no hang), the pump ran anyway, a
 play request logged `TOC generation 1` with the full table and played. Two plays produced
 exactly one generation line, so the change suppression works.
 
-**Both follow-ups from that run are now folded in** (in `CDPump_v5` / `CDAudioRedirector_v1`):
+**Both follow-ups from that run are now folded in** (in `CDPump_v6` / `CDAudioRedirector_v2`):
 - `EnsureTOC` now calls `RefreshDriveNumber()`, which re-walks the drive queue while
   `gDriveNum` is still 0. With an empty tray the CD has no queue entry, so the pump used to
   start with `drive=0` and pass it as `ioVRefNum` on every `PBRead`. It worked here because
@@ -86,9 +90,15 @@ exactly one generation line, so the change suppression works.
 Installed in Startup Items, booted with an empty tray, disc inserted after: patched
 unattended with no key held, both Apple event handlers installed, not in the Application
 menu, `drive number resolved to 4`, 16-track disc picked up as `TOC generation 1`, music
-audible, 0 underruns. ⚠ The **quit path is still unverified** — the log ends mid-session
-because `=== pump stopped ===` is only written when the loop exits. Re-copy
-`CD Audio Redirector Log` after a normal restart to confirm the handler fires.
+audible, 0 underruns.
+
+✅ **The quit path is verified too.** The log re-read after a restart carries, at the end of
+that first session, `=== pump stopped: 2196 KB delivered, 0 underruns ===` followed by the
+faceless NOTE block and `=== end of run ===`. So the quit Apple event reached the app at
+shutdown, the pump stopped cleanly and the log was closed properly rather than the app being
+force-quit. The same file then shows a **second** session from the next boot — this one with
+a disc already in the tray, so the startup TOC read succeeded and logged all 16 tracks. The
+normal-boot-with-disc case is therefore covered as well.
 
 One source, two targets, selected by `CD_FACELESS`. Building the shipping artifact from the
 same file as the tested one is deliberate: a parallel copy of an installer is exactly how the
@@ -117,21 +127,24 @@ recorded zero underruns. A full-screen game may be greedier. The underrun counte
 is the measurement; if it climbs, the dials are a bigger ring first, then larger reads per
 refill.
 
-### 1b. ⚠ The mailbox is one slot and it drops requests  *(found 2026-08-06d — do this next)*
-Request numbers in every run so far skip: `1, 4, 5, 6, 7` in the faceless run, `3,4,5,6` then
-`9,...` before that. `PumpLoop` reads whatever is in the single slot and sets
-`lastSeq = seq`, jumping over anything that arrived in between. The handler writes one slot
-and bumps `reqSeq`; two requests inside one pump pass means the first is lost, silently.
+### 1b. ✅ The request ring — DONE, awaiting hardware
+The single-slot mailbox dropped requests: numbers skipped in every run (`1, 4, 5, 6, 7` in
+the faceless run). `PumpLoop` read whatever was in the slot and set `lastSeq = seq`, stepping
+over anything that had arrived in between. Harmless only by ordering luck — the losses were
+`AudioControl` and `AudioTrackSearch`-with-hold, which the pump ignores — but nothing
+protected an `AudioPlay`, and `AudioStop` then `AudioPlay` is how a game restarts a loop.
 
-Harmless so far only by ordering luck — the dropped calls were `AudioControl` and
-`AudioTrackSearch`-with-hold, which the pump ignores anyway. **Nothing protects an
-`AudioPlay`**, and `AudioStop` immediately followed by `AudioPlay` is exactly how a game
-restarts a music loop. The window is small because the pump sleeps only 1 tick; small is not
-zero, and the failure mode is silence with no error logged anywhere.
+Now a **16-entry ring**, single-producer / single-consumer, monotonic never-wrapped indices
+so `reqWrite - reqRead` is the exact backlog. The handler still only does plain stores and
+publishes `reqWrite` last, so it stays safe at any interrupt level. The pump drains every
+pending entry per pass and calls `CDPumpIdle()` between them so a burst cannot starve the
+audio. Overflow is detected, counted in `reqDropped`, and reported by the pump, the probe and
+the trace reader — the one thing it must never be again is silent.
 
-Fix: a small ring (16 entries is plenty) with the same single-producer / single-consumer
-discipline as the PCM ring, drained fully each pass. The handler stays a write plus a chain,
-safe at any interrupt level. Log a counter of dropped entries so an overflow is never silent.
+⚠ **`CDEnginePublic` version is now 2** and every field after the mailbox moved. All three
+readers check `version` and refuse rather than print nonsense. `CDPlayProbe` no longer
+hand-rolls a copy of the struct — it includes `cd_engine.h`, so the compiler keeps them in
+step. That hand-rolled copy was a live trap: it would have read the wrong offsets silently.
 
 ### 2. Multi-track and looping behaviour
 **Repeat play is DONE and PASSED** (2026-08-06b, three plays against one live pump: cursor

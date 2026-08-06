@@ -225,13 +225,19 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
             cs == kcsAudioScan  || cs == kcsAudioControl) {
             const unsigned char *cp =
                 (const unsigned char *)((CntrlParam *)pb)->csParam;
-            int i;
+            long             w = gPub->reqWrite;
+            CDEngineRequest *e = &gPub->reqRing[w & (kEngineReqRingEntries - 1)];
+            int              i;
 
-            gPub->reqCsCode = cs;
-            for (i = 0; i < 16; i++) gPub->reqParam[i] = cp[i];
-            /* Bumped LAST: the pump reads the sequence, copies, and re-reads it, so a
-             * request half-written when it looks is retried rather than acted on. */
-            gPub->reqSeq++;
+            e->csCode = cs;
+            for (i = 0; i < 16; i++) e->param[i] = cp[i];
+
+            /* Published LAST, and this single aligned store is what makes the entry
+             * visible. Until it lands the pump does not know the slot exists, so it
+             * can never read one half-written. Still just plain stores: nothing here
+             * allocates, blocks or calls out, so it remains safe at any interrupt
+             * level — which is the whole reason the pump exists. */
+            gPub->reqWrite = w + 1;
         }
     }
 

@@ -44,7 +44,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"
 
-#define kVersionString  "CDTraceRead v1"
+#define kVersionString  "CDTraceRead v2"
 
 /* noQueueBit is bit 9 of the trap word. An immediate call ends in RTS; a queued one
  * must end at jIODone. */
@@ -164,9 +164,28 @@ int main(void)
         goto done;
     }
 
+    /* ★ The layout is not stable across engine versions — version 2 replaced the
+     * single-slot request mailbox with a ring, moving every field after it. Reading a
+     * version we were not built against would print confident nonsense, which is worse
+     * than refusing. */
+    if (pub->version != kEngineVersion) {
+        CDLogf("  the engine reports version %d; this reader was built for version %d",
+               pub->version, kEngineVersion);
+        CDLogf("  ⇒ refusing to read further: the field offsets differ, so every number");
+        CDLogf("    below would be nonsense. Rebuild both from the same tree.");
+        CDProgressSay("VERSION MISMATCH %d vs %d", pub->version, kEngineVersion);
+        goto done;
+    }
+
     CDLogf("=== the resident engine ===");
     CDLogf("  version=%d  patched=%d  cdRefNum=%d",
            pub->version, pub->patched, pub->cdRefNum);
+    CDLogf("  requests: %ld posted, %ld serviced, %ld dropped",
+           pub->reqWrite, pub->reqRead, pub->reqDropped);
+    if (pub->reqDropped > 0)
+        CDLogf("  ⚠ %ld request(s) were DROPPED before the pump saw them. The ring "
+               "overflowed, which means the pump is not getting enough time.",
+               pub->reqDropped);
     CDLogf("  origTVector=0x%08lX  ourTVector=0x%08lX",
            (unsigned long)pub->origTVector, (unsigned long)pub->ourTVector);
     CDLogf("  ring=0x%08lX entries=%ld", (unsigned long)pub->ring, pub->ringEntries);

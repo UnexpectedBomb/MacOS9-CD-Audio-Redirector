@@ -1645,10 +1645,28 @@ actually did, not why it once did it.
 - **Zero underruns with the pump as a genuine background Startup Items app.** Encouraging for
   the background-time question, though the probe still is not a game.
 
-⚠ **Not verified by this log: the quit path.** The log ends mid-session with no
-`=== pump stopped ===` block, because it is written only when the pump loop exits and the
-pump was still running when the log was copied. Whether the quit handler actually fires at
-shutdown needs the log re-copied *after* a restart. Cheap to get; not yet evidence.
+## ✅ The quit path, settled by re-reading the log after a restart
+
+The first copy of the log ended mid-session with no `=== pump stopped ===` block, because
+that is written only when the pump loop exits — and the pump was still running. Re-copied
+after a normal restart, the same file now carries, at the end of that first session:
+
+```
+=== pump stopped: 2196 KB delivered, 0 underruns ===
+  synthesised answers: 37 AudioStatus, 37 ReadQ
+  ⇒ zero underruns: the ring and the event-loop refill kept up.
+  NOTE: reaching this line means the pump loop ended, which for a faceless
+    build means a quit Apple event - normally shutdown.
+=== end of run ===
+```
+
+So at shutdown the quit Apple event reached the app, `PumpLoop` exited, the pump stopped
+cleanly and the log was closed properly. It was not force-quit, and nothing was lost.
+
+The same file then shows a **second** session from the following boot — that one with a disc
+already in the tray, so the startup TOC read succeeded and logged all 16 tracks immediately.
+The normal-boot-with-disc case is covered as well, which no earlier run had exercised for the
+faceless build.
 
 ## ★ REAL BUG FOUND IN THE LOG: the mailbox is one slot, and it drops requests
 

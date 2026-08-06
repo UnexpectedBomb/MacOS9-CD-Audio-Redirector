@@ -118,12 +118,13 @@ static pascal OSErr HandleOpenAppEvent(const AppleEvent *ae, AppleEvent *reply,
  * the reads simply work — as Phase 1 measured. */
 static void PumpLoop(CDEnginePublic *pub, short refNum)
 {
-    long        lastSeq;
     EventRecord evt;
     long        reported = -1;
 
     if (pub == NULL) return;
-    lastSeq = pub->reqSeq;
+    /* Start level with the producer: anything posted before the pump existed was never
+     * ours to service, and replaying it would start playback nobody asked for. */
+    pub->reqRead = pub->reqWrite;
     pub->pumpAlive = 1;
     CDPumpSetPublic(pub);        /* so the pump can publish the playback cursor */
 
@@ -131,47 +132,77 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     CDProgressSay("pump running - now run CDPlayProbe_v2 and LISTEN");
 
     for (;;) {
-        long          seq;
-        short         cs;
-        unsigned char param[16];
-        int           i;
+        /* ★ DRAIN EVERY PENDING REQUEST, not just the newest one.
+         *
+         * The old code read whichever request happened to be in the single mailbox slot
+         * and then jumped lastSeq to that sequence number, stepping silently over
+         * anything that had arrived since it last looked. The hardware logs show it
+         * happening in every run — the request numbers skip. See cd_engine.h. */
+        while (pub->reqRead != pub->reqWrite) {
+            long             backlog = pub->reqWrite - pub->reqRead;
+            long             seq;
+            CDEngineRequest *e;
+            short            cs;
+            unsigned char    param[16];
+            int              i;
 
-        /* Seqlock: copy, then re-read the sequence. A request half-written when we
-         * looked is retried rather than acted on. */
-        seq = pub->reqSeq;
-        if (seq != lastSeq) {
-            cs = pub->reqCsCode;
-            for (i = 0; i < 16; i++) param[i] = pub->reqParam[i];
-            if (pub->reqSeq == seq) {
-                lastSeq = seq;
-                CDLogf("--- request %ld: csCode %d ---", seq, cs);
-                CDLogHexAt("  param", param, 16, 0);
-                switch (cs) {
-                    case kcsAudioPlay:
-                        CDProgressSay("AudioPlay -> starting playback");
-                        (void)CDPumpPlay(param);
-                        break;
-                    case kcsAudioTrackSearch:
-                        /* csParam+6 non-zero means hold, not play. */
-                        if (param[6] == 0) {
-                            CDProgressSay("AudioTrackSearch -> starting playback");
-                            (void)CDPumpPlay(param);
-                        } else {
-                            CDLogf("  hold flag set; positioning only, not playing");
-                        }
-                        break;
-                    case kcsAudioPause:
-                        CDProgressSay("AudioPause(%d)", param[0]);
-                        CDPumpPause(param[0] != 0);
-                        break;
-                    case kcsAudioStop:
-                        CDProgressSay("AudioStop");
-                        CDPumpStop();
-                        break;
-                    default:
-                        break;
-                }
+            /* Producer lapped us: the oldest entries have been overwritten. Count them
+             * and resynchronise on the oldest one that survives. This should never
+             * happen with 16 entries and a 1-tick poll, and if it ever does the count
+             * says so out loud rather than leaving another silent gap. */
+            if (backlog > kEngineReqRingEntries) {
+                long lost = backlog - kEngineReqRingEntries;
+                pub->reqDropped += lost;
+                pub->reqRead     = pub->reqWrite - kEngineReqRingEntries;
+                CDLogf("  !! request ring overflowed: %ld request(s) lost "
+                       "(%ld total). The pump is not getting enough time.",
+                       lost, pub->reqDropped);
             }
+
+            seq = pub->reqRead;
+            e   = &pub->reqRing[seq & (kEngineReqRingEntries - 1)];
+            cs  = e->csCode;
+            for (i = 0; i < 16; i++) param[i] = e->param[i];
+
+            /* Re-check AFTER the copy: if the producer lapped us while we were reading
+             * this very slot, what we just copied is a different request. Discard it
+             * and let the overflow branch above resynchronise on the next pass. */
+            if (pub->reqWrite - seq > kEngineReqRingEntries) continue;
+
+            pub->reqRead = seq + 1;
+
+            CDLogf("--- request %ld: csCode %d ---", seq, cs);
+            CDLogHexAt("  param", param, 16, 0);
+            switch (cs) {
+                case kcsAudioPlay:
+                    CDProgressSay("AudioPlay -> starting playback");
+                    (void)CDPumpPlay(param);
+                    break;
+                case kcsAudioTrackSearch:
+                    /* csParam+6 non-zero means hold, not play. */
+                    if (param[6] == 0) {
+                        CDProgressSay("AudioTrackSearch -> starting playback");
+                        (void)CDPumpPlay(param);
+                    } else {
+                        CDLogf("  hold flag set; positioning only, not playing");
+                    }
+                    break;
+                case kcsAudioPause:
+                    CDProgressSay("AudioPause(%d)", param[0]);
+                    CDPumpPause(param[0] != 0);
+                    break;
+                case kcsAudioStop:
+                    CDProgressSay("AudioStop");
+                    CDPumpStop();
+                    break;
+                default:
+                    break;
+            }
+
+            /* Keep the ring fed between requests too. A burst of queued requests can
+             * take a while to work through — CDPumpPlay alone pre-rolls for a second —
+             * and the audio must not starve while we catch up. */
+            CDPumpIdle();
         }
 
         CDPumpIdle();
@@ -228,6 +259,12 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
                delivered / 1024, ur);
         CDLogf("  synthesised answers: %ld AudioStatus, %ld ReadQ",
                pub->synthStatusCount, pub->synthReadQCount);
+        CDLogf("  requests: %ld posted, %ld serviced, %ld dropped",
+               pub->reqWrite, pub->reqRead, pub->reqDropped);
+        if (pub->reqDropped > 0)
+            CDLogf("  ⇒ %ld request(s) were LOST. Any missing music is explained by "
+                   "this; the ring needs to be bigger or the pump needs more time.",
+                   pub->reqDropped);
         if (pub->synthStatusCount == 0 && pub->synthReadQCount == 0)
             CDLogf("  ⇒ nothing polled for position, so synthesis was never exercised.");
         if (ur == 0 && delivered > 0)
@@ -241,10 +278,10 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v1"
+#define kVersionString  "CD Audio Redirector v2"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v5"
+#define kVersionString  "CDPump v6"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')

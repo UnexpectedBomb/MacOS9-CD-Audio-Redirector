@@ -73,8 +73,9 @@
 
 #include "cd_probe_common.h"
 #include "cd_cscodes.h"
+#include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v3"
+#define kVersionString  "CDPlayProbe v4"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -547,15 +548,34 @@ int main(void)
      * definitive answer is to ask whether the redirector is installed and playing. */
     {
         long  gv = 0;
-        if (Gestalt(FOUR_CHAR_CODE('CDau'), &gv) == noErr && gv != 0) {
-            struct { OSType magic; short version; short patched; short cdRefNum;
-                     short r0; Ptr o; Ptr u; Ptr ring; long re; long wc;
-                     long cc; long ac; long rs; short rcs; short rr;
-                     unsigned char rp[16]; short pa; short pp; long pu; } *pub =
-                (void *)gv;
+        if (Gestalt(kEnginePublicSelector, &gv) == noErr && gv != 0) {
+            /* ★ The real CDEnginePublic from cd_engine.h, not a hand-copied struct.
+             * This used to be a local re-declaration of the layout, which meant the
+             * engine could not change a field without this probe silently reading the
+             * wrong offsets — and the request ring did exactly that, moving everything
+             * after it. Include the header and the compiler keeps them honest. */
+            CDEnginePublic *pub = (CDEnginePublic *)gv;
+
             CDLogf("--- the CD Audio Redirector IS resident ---");
-            CDLogf("  patched=%d  pumpAlive=%d  pumpPlaying=%d  underruns=%ld",
-                   pub->patched, pub->pa, pub->pp, pub->pu);
+            if (pub->magic != kEngineMagic) {
+                CDLogf("  !! magic is 0x%08lX, expected 0x%08lX - not our block, so",
+                       (unsigned long)pub->magic, (unsigned long)kEngineMagic);
+                CDLogf("     nothing below can be trusted.");
+            } else if (pub->version != kEngineVersion) {
+                CDLogf("  !! engine reports version %d, this probe was built for %d.",
+                       pub->version, kEngineVersion);
+                CDLogf("     The layout differs, so the numbers below would be");
+                CDLogf("     nonsense. Rebuild both from the same tree.");
+            } else {
+                CDLogf("  patched=%d  pumpAlive=%d  pumpPlaying=%d  underruns=%ld",
+                       pub->patched, pub->pumpAlive, pub->pumpPlaying,
+                       pub->pumpUnderruns);
+                CDLogf("  requests: %ld posted, %ld serviced, %ld DROPPED",
+                       pub->reqWrite, pub->reqRead, pub->reqDropped);
+                if (pub->reqDropped > 0)
+                    CDLogf("  !! dropped requests mean the pump missed calls this probe "
+                           "made - treat any silence below as explained by that.");
+            }
             CDLogf("  ⇒ any music heard came from the redirector's digital path, and");
             CDLogf("    any moving position was synthesised by it. This is the fixed");
             CDLogf("    machine, not the analog control case.");
