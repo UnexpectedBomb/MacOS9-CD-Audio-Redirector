@@ -38,6 +38,8 @@
 #include <Files.h>
 #include <MacMemory.h>
 #include <Resources.h>
+#include <Folders.h>
+#include <Script.h>
 #include <ToolUtils.h>
 #include <CodeFragments.h>
 
@@ -59,6 +61,37 @@ typedef OSErr (*EngineIOProc)(AddressSpaceID spaceID, IOCommandID cmdID,
                               IOCommandKind kind);
 
 static CDEngineInfo gInfo;
+
+/* Fallback publication: 4 bytes of magic then the 4-byte address of the public block,
+ * written into the System Folder. The reader tries Gestalt first and falls back to
+ * this. Deliberately the dumbest possible channel — after the Gestalt call silently
+ * failed, a mechanism with nothing to misunderstand is worth having. */
+static void WriteStateFile(Ptr pub)
+{
+    short   vRefNum;
+    long    dirID;
+    FSSpec  spec;
+    short   ref;
+    long    len;
+    long    buf[2];
+
+    if (pub == NULL) return;
+    buf[0] = (long)kEngineMagic;
+    buf[1] = (long)pub;
+
+    if (FindFolder(kOnSystemDisk, kSystemFolderType, kDontCreateFolder,
+                   &vRefNum, &dirID) != noErr) return;
+    if (FSMakeFSSpec(vRefNum, dirID, kEngineStateFileName, &spec) != noErr)
+        (void)FSpCreate(&spec, 'CDei', 'CDst', smSystemScript);
+    if (FSpOpenDF(&spec, fsRdWrPerm, &ref) != noErr) return;
+    SetFPos(ref, fsFromStart, 0);
+    len = sizeof(buf);
+    FSWrite(ref, &len, (Ptr)buf);
+    SetEOF(ref, sizeof(buf));
+    FSClose(ref);
+    FlushVol(NULL, vRefNum);
+    CDLogf("  state file written: magic + block address");
+}
 
 static const char *StatusText(short s)
 {
@@ -228,6 +261,15 @@ int main(void)
            (unsigned long)gInfo.ourCode, (unsigned long)gInfo.ourTOC);
     CDLogf("  ring=0x%08lX entries=%ld  patched=%d",
            (unsigned long)gInfo.ring, gInfo.ringEntries, gInfo.patched);
+    CDLogf("  published block = 0x%08lX", (unsigned long)gInfo.pubBlock);
+    CDLogf("  Gestalt registration: NewGestaltValue=%d ReplaceGestaltValue=%d "
+           "SetGestaltValue=%d  (1 = not attempted)",
+           gInfo.gestaltNewErr, gInfo.gestaltReplaceErr, gInfo.gestaltSetErr);
+    if (gInfo.gestaltPublished)
+        CDLogf("  ⇒ 'CDau' IS published; CDTraceRead will find it via Gestalt.");
+    else
+        CDLogf("  ⇒ Gestalt did NOT take. The state file below is the fallback.");
+    WriteStateFile(gInfo.pubBlock);
     CDLogf("  sanity: our code 0x%08lX must NOT be inside the PEF resource handle;",
            (unsigned long)gInfo.ourCode);
     CDLogf("          it should sit near the system-heap copy at 0x%08lX",

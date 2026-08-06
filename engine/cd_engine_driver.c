@@ -331,9 +331,24 @@ static OSErr EngineInit(CDEngineInfo *info)
     gPub->callCount      = 0;
     gPub->audioCallCount = 0;
 
-    /* SetGestaltValue is create-or-replace, so installing twice in one boot just
-     * repoints the selector rather than failing. */
-    (void)SetGestaltValue(kEnginePublicSelector, (long)gPub);
+    /* ★ Try all three registration entry points and RECORD EVERY RESULT.
+     * The first version called only SetGestaltValue and discarded the error with a
+     * (void) cast; the selector never registered and the reader reported
+     * gestaltUndefSelectorErr (-5551) with nothing to explain it. Whichever of these
+     * OS 9 accepts for a brand-new value selector, we will now know. */
+    info->pubBlock          = (Ptr)gPub;
+    info->gestaltNewErr     = NewGestaltValue(kEnginePublicSelector, (long)gPub);
+    info->gestaltReplaceErr = 1;     /* 1 = not attempted */
+    info->gestaltSetErr     = 1;
+    if (info->gestaltNewErr != noErr) {
+        info->gestaltReplaceErr = ReplaceGestaltValue(kEnginePublicSelector,
+                                                     (long)gPub);
+        if (info->gestaltReplaceErr != noErr)
+            info->gestaltSetErr = SetGestaltValue(kEnginePublicSelector, (long)gPub);
+    }
+    info->gestaltPublished = (info->gestaltNewErr     == noErr ||
+                              info->gestaltReplaceErr == noErr ||
+                              info->gestaltSetErr     == noErr) ? 1 : 0;
 
     /* Kept resident here rather than in the info block, so neither the handler nor
      * a later patch/unpatch ever dereferences caller-owned memory. */

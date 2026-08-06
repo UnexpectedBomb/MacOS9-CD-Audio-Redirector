@@ -35,6 +35,7 @@
 #include <OSUtils.h>
 #include <ToolUtils.h>
 #include <Gestalt.h>
+#include <Folders.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -110,8 +111,40 @@ int main(void)
     CDLogStep("Gestalt('CDau')");
     gerr = Gestalt(kEnginePublicSelector, &gv);
     CDLogf("  Gestalt err=%d value=0x%08lX", gerr, (unsigned long)gv);
+    if (gerr == -5551)
+        CDLogf("  (-5551 = gestaltUndefSelectorErr: nothing registered the selector)");
 
+    /* Fallback: the state file the installer writes. Gestalt registration failed
+     * outright on the first attempt, so the reader no longer depends on it. */
     if (gerr != noErr || gv == 0) {
+        short   vRefNum;
+        long    dirID;
+        FSSpec  spec;
+        short   ref;
+        long    len;
+        long    buf[2];
+
+        CDLogStep("fallback: read the state file");
+        buf[0] = 0; buf[1] = 0;
+        if (FindFolder(kOnSystemDisk, kSystemFolderType, kDontCreateFolder,
+                       &vRefNum, &dirID) == noErr &&
+            FSMakeFSSpec(vRefNum, dirID, kEngineStateFileName, &spec) == noErr &&
+            FSpOpenDF(&spec, fsRdPerm, &ref) == noErr) {
+            len = sizeof(buf);
+            (void)FSRead(ref, &len, (Ptr)buf);
+            FSClose(ref);
+            CDLogf("  state file: magic=0x%08lX addr=0x%08lX",
+                   (unsigned long)buf[0], (unsigned long)buf[1]);
+            if ((OSType)buf[0] == kEngineMagic && buf[1] != 0) {
+                gv = buf[1];
+                CDLogf("  ⇒ using the address from the state file");
+            }
+        } else {
+            CDLogf("  no state file (or unreadable)");
+        }
+    }
+
+    if (gv == 0) {
         CDLogf("=== THE ENGINE IS NOT RESIDENT ===");
         CDLogf("  Nothing has published 'CDau', so either CDEngineInstall has not been");
         CDLogf("  run this boot, or it declined. The patch never survives a restart, so");

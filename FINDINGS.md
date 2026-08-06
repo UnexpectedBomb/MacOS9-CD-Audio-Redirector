@@ -980,3 +980,41 @@ What the reader reports: `patched`, `callCount`, `audioCallCount`, both TVectors
 ring decoded oldest-first with csCode names and immediate-vs-queued per entry. It warns
 explicitly when `patched=0` or `callCount=0`, since after any reboot the expected state is
 "engine not resident" — the patch never persists.
+
+## Step 4 run 1 — the patch works, the publication did not
+
+```
+CDEngineInstall_v2:  patch returned 0, status=0, patched=1
+                     ⇒ PATCHED, and read back correct
+CDTraceRead_v1:      Gestalt err=-5551  value=0x00000000
+```
+
+−5551 is `gestaltUndefSelectorErr`: nothing ever registered `'CDau'`. **The patch itself
+succeeded again** — this is purely a publication failure.
+
+**And I made it undiagnosable.** The engine's registration call was written as
+
+```c
+(void)SetGestaltValue(kEnginePublicSelector, (long)gPub);
+```
+
+so when it failed there was nothing in any log to say why. Discarding a return value from
+a call that can fail silently is the same mistake pattern as the `CDLogOpen` reopen that
+ate the Phase-1 verdicts. All three symbols (`NewGestaltValue`, `ReplaceGestaltValue`,
+`SetGestaltValue`) are genuinely present in InterfaceLib, so the call happened and
+returned an error I threw away.
+
+**Two fixes rather than a guess about which call OS 9 wants:**
+
+1. **Try all three registration entry points in turn and record every result** in the info
+   block, so the log states exactly which one OS 9 accepts for a brand-new value selector.
+   `NewGestaltValue` first (the documented way to *install* one), then
+   `ReplaceGestaltValue`, then `SetGestaltValue`.
+2. **A fallback publication channel that involves no OS mechanism at all**: the installer
+   writes `CD Engine State` into the System Folder — four bytes of magic, then the 4-byte
+   address of the public block — and the reader falls back to it. A stale file after a
+   reboot is harmless: the reader validates the *block's own* magic before trusting it,
+   and on OS 9 all RAM is readable so a wrong address cannot fault.
+
+The next run therefore produces the trace regardless of whether Gestalt cooperates, and
+tells us which registration call works for future use.

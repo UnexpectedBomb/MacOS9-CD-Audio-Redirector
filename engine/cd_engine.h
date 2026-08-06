@@ -120,6 +120,19 @@ typedef struct {
 
     short    patched;           /* 0 in Step 2, always                          */
     short    reserved2;
+
+    /* ★ Publication diagnostics. The first attempt wrote
+     *   (void)SetGestaltValue(...)
+     * and threw the error away, so when the reader could not find the selector there
+     * was nothing to say why. Never discard a return value from a call that can fail
+     * silently — every result gets recorded here now, and all three registration
+     * entry points are tried in turn because which one OS 9 accepts for a brand-new
+     * value selector is not something to guess at. */
+    Ptr      pubBlock;
+    OSErr    gestaltNewErr;
+    OSErr    gestaltReplaceErr;
+    OSErr    gestaltSetErr;
+    short    gestaltPublished;  /* 1 if any of the three worked                 */
 } CDEngineInfo;
 
 /* Trace ring entry, same shape the 68K generation used — the field that mattered was
@@ -147,6 +160,14 @@ typedef struct {
  * values, and the handler updates them with plain stores — it may be at interrupt
  * time. */
 #define kEnginePublicSelector   FOUR_CHAR_CODE('CDau')
+
+/* Fallback publication, for when the Gestalt route does not take. The installer writes
+ * this tiny file into the System Folder and the reader falls back to it: 4 bytes of
+ * magic then the 4-byte address of the CDEnginePublic block. Crude on purpose — no OS
+ * mechanism to misunderstand. A stale file after a reboot is harmless because the
+ * reader validates the block's own magic before trusting it, and on OS 9 all RAM is
+ * readable so a wrong address cannot fault. */
+#define kEngineStateFileName    "\pCD Engine State"
 
 typedef struct {
     OSType          magic;          /* kEngineMagic                             */
