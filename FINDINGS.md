@@ -2162,3 +2162,98 @@ exhausted, 320 bytes being decisive stops being a mystery and becomes an obvious
 - **bisectB clean** ⇒ allocation size confirmed, and we have a shipping candidate to harden.
 - **bisectB freezes** ⇒ the threshold is tighter than 188 bytes, and the block has to shrink
   another way — or the machine has to be tested without the USB 2.0 stack.
+
+# Run 2026-08-07d: bisectB — stable, and it kills my own explanation
+
+`CDAudioRedirector_bisectB` (drain-all behaviour, 2-entry ring, 188-byte block), probe run
+three times. **Music all three times, 120 polls, no freeze.** Logs in
+`logs/2026-08-07-bisectB-x3/`.
+
+The new self-identifying line confirms what ran, with no inference needed:
+
+```
+build config: CD_RING_MODE=1  ringEntries=2  faceless=1  structBytes=188
+```
+
+## ★ The system heap is NOT short of memory. My hypothesis was wrong.
+
+```
+SYSTEM HEAP at init: 1391584 bytes free, largest block 1594768
+published block is 188 bytes (ring holds 2 entries)
+```
+
+**1.39 MB free.** The idea that 320 extra bytes tips an exhausted heap over is dead. I offered
+that as the likely mechanism and it is not supported — the very first measurement of it
+refutes it.
+
+What survives is the bare correlation, now over eleven runs:
+
+| block size | runs | result |
+|---|---|---|
+| ~148 B (v1) | 4 | clean |
+| **188 B (bisectB)** | **3** | **clean** |
+| 468 B (v2, v3, v4, bisectA) | 4 | froze |
+
+A threshold sits somewhere between 188 and 468 bytes, on a machine with 1.4 MB free, and
+**there is no mechanism to explain it.** I also checked the obvious candidate on our side: the
+trace ring allocates `kEngineRingEntries * sizeof(CDEngineTrace)` and indexes with
+`& (kEngineRingEntries - 1)` on a power-of-two 512, so it is in bounds and is not the culprit.
+
+## ⚠ And two slots are NOT enough
+
+```
+!! request ring overflowed: 1 request(s) lost (1 total)
+requests: 6 posted, 6 serviced, 1 DROPPED     (then 2, then 3 across the three runs)
+```
+
+Three requests — `AudioControl`, `AudioTrackSearch`, `AudioPlay` — arrive inside a single pump
+pass, every single time. Two slots cannot hold three, so one was dropped on every run.
+
+It happened to be survivable here: the overflow discards the **oldest**, which was the volume
+call the pump ignores anyway, so the `AudioPlay` always got through and the music always
+played. **That is the call order being kind, not the design being correct.** A game that
+issues its calls in a different order loses something that matters.
+
+The one genuinely good thing: **the drop was detected, counted and shouted about**, in the
+pump's log and in the probe's. That is the ship gate's "no silent failures" requirement
+working exactly as intended — bisectB fails the gate loudly instead of quietly, which is the
+whole point of building it that way.
+
+So bisectB is **stable but not shippable**.
+
+## What this means for shipping to someone else
+
+The empirical threshold is the uncomfortable part. "It does not freeze on this machine below
+~200 bytes" is not the same as "it will not freeze on Jubadub's." His system heap has a
+different layout, probably no experimental USB 2.0 driver, and a different everything. Tuning
+a magic number against one machine and shipping it is not a fix, it is a coincidence we would
+be relying on.
+
+**So the next run should aim at the mechanism, not at a size that happens to work.**
+
+## Next, in priority order
+
+### 1. The decisive test, and it needs no new build
+Run **`CDAudioRedirector_v6`** (16 slots, 468 bytes — freezes reliably, 4 for 4) **with the
+USB 2.0 stack disabled.**
+
+- **Clean** ⇒ the interaction is with the USB 2.0 driver. That reframes everything: the full
+  16-slot ring is probably fine for an ordinary OS 9 machine, and what we have is a
+  coexistence problem between two of this project's own experiments rather than a defect in
+  the redirector.
+- **Still freezes** ⇒ USB 2.0 is finally cleared, and the fault is something else in the
+  system heap that our allocation size perturbs.
+
+The USB 2.0 support on this mini comes from the ROM plus the `USB2_Activate_n4g` Startup
+Items app. Removing the activator is the cheap first attempt; if the EHCI driver is
+ROM-resident and loads anyway, that shows in `EHCIUIM_init.log` and the real test needs a
+stock ROM boot.
+
+### 2. `CDAudioRedirector_bisectC` — 4 slots, 228 bytes *(built and staged)*
+Four slots covers the observed burst of three with one to spare, at 40 bytes above a size
+known to be safe here. Worth running, but understand what it is: it would tell us the
+redirector can be made to work **on this machine**. It would not explain anything, and it
+would not transfer with confidence to Jubadub's.
+
+Verified before staging: all three resident engines are distinct, each app embeds the right
+one, and the sizes are 188 / 228 / 468.
