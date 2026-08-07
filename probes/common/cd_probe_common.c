@@ -118,6 +118,8 @@ void CDProgressClose(void)
 
 static short gLogRef  = 0;
 static short gLogVRef = 0;
+static short gLogLastErr = 0;    /* last FSWrite result; see CDLogDiag */
+static long  gLogWrites  = 0;    /* lines actually handed to FSWrite   */
 
 Boolean CDLogOpen(ConstStr255Param fileName)
 {
@@ -180,8 +182,20 @@ void CDLogf(const char *fmt, ...)
     buf[n] = 0;
 
     len = n;
-    FSWrite(gLogRef, &len, buf);
+    /* ★ Keep the error. It used to be discarded, which is why the v3 run could lose
+     * every pump log line with nothing anywhere saying so. The project has now been
+     * bitten three times by a silently-dropped error (CDLogOpen, SetGestaltValue, and
+     * this); the value is exposed through CDLogDiag. */
+    gLogLastErr = FSWrite(gLogRef, &len, buf);
+    gLogWrites++;
     CDLogFlush();
+}
+
+void CDLogDiag(short *quietDepth, short *lastErr, long *writes)
+{
+    if (quietDepth) *quietDepth = gQuietDepth;
+    if (lastErr)    *lastErr    = gLogLastErr;
+    if (writes)     *writes     = gLogWrites;
 }
 
 void CDLogStep(const char *fmt, ...)

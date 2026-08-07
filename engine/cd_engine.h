@@ -42,8 +42,9 @@
 
 #define kEngineMagic    FOUR_CHAR_CODE('CDE1')
 /* 1 = single-slot request mailbox. 2 = the 16-entry request ring, which moved every
- * field after it in CDEnginePublic. Readers must check before trusting the layout. */
-#define kEngineVersion  2
+ * field after it in CDEnginePublic. 3 = pump liveness fields appended (pumpBeat and
+ * the logger diagnostics). Readers must check before trusting the layout. */
+#define kEngineVersion  3
 
 /* ★ DO NOT HAND-COUNT OFFSETS INTO A ROUTINE DESCRIPTOR. Use MixedMode.h's real
  * `RoutineDescriptor` / `RoutineRecord` structs.
@@ -255,6 +256,26 @@ typedef struct {
     volatile short  pumpAlive;
     volatile short  pumpPlaying;
     volatile long   pumpUnderruns;
+
+    /* ★ PUMP LIVENESS, published rather than logged.
+     *
+     * The v3 run put a heartbeat in the pump's own log and learned nothing, because
+     * that log had already stopped receiving lines — while the pump was provably still
+     * playing, its synthesised position advancing smoothly to 3.00 s. Meanwhile the
+     * probe wrote 359 lines to its own log in the same window, so the File Manager and
+     * the volume were fine. The pump's logging channel was the thing that was broken,
+     * and instrumentation that travels down a broken channel measures nothing.
+     *
+     * So the pump publishes here instead, and the PROBE reports it — through the
+     * channel that demonstrably survives. `pumpBeat` rises once per pump loop pass: if
+     * it is still climbing when the probe stops, the pump was alive to the end.
+     * logQuietDepth and logLastErr say why the pump's own log went silent: a stuck
+     * quiet region reads as depth > 0, a failing write as a non-zero error. */
+    volatile long   pumpBeat;        /* ++ every pump event-loop pass            */
+    volatile long   pumpReqSeen;     /* requests actually drained                */
+    volatile short  logQuietDepth;   /* > 0 means CDLogf is discarding lines     */
+    volatile short  logLastErr;      /* last FSWrite result in the pump          */
+    volatile long   logWrites;       /* lines the pump handed to FSWrite         */
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v4"
+#define kVersionString  "CDPlayProbe v5"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -154,6 +154,39 @@ static OSErr TryAudioCall(short csCode, short posType, Boolean asMSF,
  * convention is unambiguous afterwards: whatever field counts up at 75 units per
  * second is the frame counter, and whether it starts at the track boundary or at
  * the start of the disc tells us absolute vs track-relative. */
+/* ★ Report the PUMP's state into the PROBE's log, once per poll.
+ *
+ * WHY IT LIVES HERE. The v3 freeze run put a heartbeat in the pump's own log and it
+ * measured nothing: that log had stopped receiving lines entirely, while the pump was
+ * provably still playing — its synthesised position climbed smoothly to 3.00 s of
+ * delivered audio. In the same window this probe wrote 359 lines to its own log, so
+ * the File Manager and the volume were healthy; it was the pump's logging channel that
+ * was broken. Instrumentation sent down a broken channel measures nothing, so the pump
+ * publishes to memory and the probe reports it here.
+ *
+ * What each field answers when the machine next wedges:
+ *   beat frozen while polls continue  -> the pump stopped being scheduled
+ *   beat still climbing at the end    -> the pump was alive; the wedge is elsewhere
+ *   quiet > 0                         -> the pump's log was suppressed, not failing
+ *   logErr != 0                       -> its writes were failing, and now we know it
+ *   reqW climbing with reqR stuck     -> the drain loop stopped draining */
+static void LogPumpState(void)
+{
+    long gv = 0;
+
+    if (Gestalt(kEnginePublicSelector, &gv) != noErr || gv == 0) return;
+    {
+        CDEnginePublic *pub = (CDEnginePublic *)gv;
+        if (pub->magic != kEngineMagic || pub->version != kEngineVersion) return;
+        CDLogf("    pump: beat=%ld reqSeen=%ld state=%d absF=%ld | "
+               "reqR=%ld reqW=%ld drop=%ld | under=%ld | quiet=%d logErr=%d "
+               "logWrites=%ld",
+               pub->pumpBeat, pub->pumpReqSeen, pub->playState, pub->curAbsFrame,
+               pub->reqRead, pub->reqWrite, pub->reqDropped, pub->pumpUnderruns,
+               pub->logQuietDepth, pub->logLastErr, pub->logWrites);
+    }
+}
+
 static void PollPosition(void)
 {
     int   i;
@@ -170,6 +203,7 @@ static void PollPosition(void)
         OSErr err;
 
         CDLogf("  poll %d (t=%ld ticks)", i, (long)TickCount());
+        LogPumpState();
 
         err = CDStatusCall(gP.cd.refNum, kcsAudioStatus, buf, sizeof(buf));
         if (err != noErr)

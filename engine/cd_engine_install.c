@@ -171,6 +171,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
             if (pub->reqWrite - seq > kEngineReqRingEntries) continue;
 
             pub->reqRead = seq + 1;
+            pub->pumpReqSeen++;      /* published, so it survives a dead log */
 
             CDLogf("--- request %ld: csCode %d ---", seq, cs);
             CDLogHexAt("  param", param, 16, 0);
@@ -232,6 +233,20 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
                 reported = delivered >> 18;
                 CDProgressSay("playing: %ld KB delivered, %ld underruns",
                               delivered / 1024, ur);
+            }
+
+            /* ★ PUBLISHED LIVENESS. This is the heartbeat that actually reaches
+             * someone: the v3 log-based one measured nothing, because the pump's log
+             * had already gone silent while the pump itself kept playing. The probe
+             * reads these and writes them to ITS log, which survived that run intact. */
+            pub->pumpBeat++;
+            {
+                short qd = 0, le = 0;
+                long  lw = 0;
+                CDLogDiag(&qd, &le, &lw);
+                pub->logQuietDepth = qd;
+                pub->logLastErr    = le;
+                pub->logWrites     = lw;
             }
 
             /* ★ PLAYBACK HEARTBEAT — instrumentation for the v2 freeze.
@@ -306,10 +321,10 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v3"
+#define kVersionString  "CD Audio Redirector v4"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v7"
+#define kVersionString  "CDPump v8"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')

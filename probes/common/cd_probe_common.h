@@ -91,6 +91,19 @@ void CDLogf(const char *fmt, ...);
  * this project twice (the re-opened CDLogOpen, the discarded SetGestaltValue). */
 void CDLogSetQuiet(Boolean quiet);
 
+/* ★ Report on the logger itself.
+ *
+ * Added because the v3 run lost every pump log line after "PUMP RUNNING" while the
+ * pump demonstrably kept playing — and there was no way to tell whether the writes
+ * were being suppressed by a stuck quiet region, or failing in FSWrite, or never
+ * attempted. A logger that can fail silently has to be able to report on itself
+ * through some other channel.
+ *
+ * quietDepth: current nesting depth; anything > 0 means CDLogf is discarding.
+ * lastErr:    the most recent FSWrite result, which CDLogf used to throw away.
+ * writes:     count of log lines actually handed to FSWrite. */
+void CDLogDiag(short *quietDepth, short *lastErr, long *writes);
+
 /* Writes one line, flushes it, AND puts it on screen. Use immediately before
  * every driver call. */
 void CDLogStep(const char *fmt, ...);

@@ -1878,3 +1878,79 @@ one question that splits the field:
 `reqR`/`reqW`/`drop` ride along so a runaway index appears as a number rather than a theory.
 
 Engine version stays 2, so `CDPlayProbe_v4` and `CDTraceRead_v2` remain the correct partners.
+
+# Run 2026-08-06g: the heartbeat measured nothing — and its absence is the finding
+
+`CDAudioRedirector_v3` froze again, at probe poll 13 (v2 froze at poll 6). Logs in
+`logs/2026-08-06-v3-heartbeat/`. Both logs were deleted first this time, so each holds
+exactly one session.
+
+**The heartbeat never appeared. Neither did anything else from the pump.** After
+`=== PUMP RUNNING ===` the redirector's log contains **not one further line** — no
+`--- request N ---`, no `pump: play LBA`, no `beat`.
+
+## But the pump was alive and playing the whole time
+
+The probe's log settles it. Every `AudioStatus` answer carries byte 0 = **`0x11`**, which is
+*our* synthesis marker — the handler only writes it when `playState` says playing, and
+`playState` is set by the pump. And the positions climb smoothly:
+
+| probe poll | synthesised abs MSF | LBA | audio delivered |
+|---|---|---|---|
+| early | 00:02:37 | 37 | 0.49 s |
+| … | 00:03:00 | 75 | 1.00 s |
+| … | 00:03:56 | 131 | 1.75 s |
+| … | 00:04:18 | 168 | 2.24 s |
+| last | 00:05:00 | 225 | 3.00 s |
+
+Those numbers are derived from `gReadOff` — bytes the **Sound Manager consumed**. So the
+pump's ring, its refill loop and `PublishCursor` were all running normally, right up to the
+freeze, having delivered three full seconds of audio.
+
+## And the File Manager was healthy
+
+In that same window the **probe wrote 359 lines** to its own log, each one flushed. The
+volume was fine. It was not a wedged disk, and it was not the File Manager.
+
+## So the pump's logging channel was already dead, and that defeated the instrumentation
+
+The pump was playing, publishing, and being scheduled — while producing no log output at all.
+Only two things in `CDLogf` can do that:
+
+- **`gQuietDepth > 0`** — a quiet region entered and never left, so every line is discarded.
+  That counter is new, added with the TOC re-read (`CDLogSetQuiet`), and `EnsureTOC` and
+  `RefreshDriveNumber` both wrap calls in it.
+- **`FSWrite` failing** — and `CDLogf` *discarded its result*, so a failure left no trace.
+  Third time this project has been blinded by a dropped error, after `CDLogOpen` and
+  `SetGestaltValue`.
+
+**Lesson, and it is a general one: instrumentation is only as good as the channel it travels
+down. A heartbeat written to a log that has stopped working measures nothing, and its silence
+looks exactly like the thing you were trying to detect.** The v3 build could not have
+distinguished "pump wedged" from "pump fine, log broken" — those were the two hypotheses, and
+it was blind to the difference.
+
+## `CDAudioRedirector_v4` / `CDPlayProbe_v5`: measure through the channel that works
+
+The pump now publishes liveness to the **shared block** instead of the log, and the **probe**
+reports it — because the probe's log is the one that demonstrably survived:
+
+- `pumpBeat` — incremented once per pump event-loop pass
+- `pumpReqSeen` — requests actually drained
+- `logQuietDepth`, `logLastErr`, `logWrites` — the logger reporting on itself
+- alongside `playState`, `curAbsFrame`, `reqRead`/`reqWrite`/`reqDropped`, underruns
+
+`CDLogf` now keeps the `FSWrite` result rather than dropping it, and `CDLogDiag` exposes it.
+
+One line per poll, in the probe's log, four times a second. When it next wedges:
+
+- **`beat` frozen while polls continue** ⇒ the pump stopped being scheduled;
+- **`beat` still climbing at the last poll** ⇒ the pump was alive and the wedge is elsewhere;
+- **`quiet > 0`** ⇒ the pump's log was suppressed by an unbalanced quiet region — and that is
+  a bug in my TOC code, not in the ring;
+- **`logErr != 0`** ⇒ its writes were failing, and now we will know it;
+- **`reqW` climbing while `reqR` sticks** ⇒ the drain loop stopped draining.
+
+Engine version is now **3** (the block grew), so the matching set is `CDAudioRedirector_v4`,
+`CDPump_v8`, `CDPlayProbe_v5`, `CDTraceRead_v3`. Older readers will refuse rather than
+misreport, which is the guard doing its job.
