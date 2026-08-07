@@ -1826,7 +1826,7 @@ Two things the control also settled for free:
   v1+v3 — which does not weaken it: the probe only reads the block after `Cleanup`, long
   after the point where v2 froze.)
 
-**The USB 2.0 stack is exonerated**, as the user judged: it was live for both runs.
+**The USB 2.0 stack looked exonerated** on this run — it was live for both. ⚠ WITHDRAWN 2026-08-07: that rested on a single control run, and the freeze turned out to be intermittent with an onset varying by more than 4x. See the 2026-08-07 entry.
 
 ## The freeze signature, and why it argues against a wild pointer
 
