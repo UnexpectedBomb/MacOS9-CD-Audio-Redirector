@@ -46,11 +46,13 @@ slots with the ring in its own system-heap allocation, so the published block st
 bytes — essentially v1's 148, the size profile with the most hardware behind it. Three runs,
 120 polls, 18 of 18 requests serviced, 0 dropped.
 
-⚠ **It is still not finishable**, because the ship gate says *every time* and what has been
-shown is three ten-second plays of track 1. A track **switch** has never run, natural
-end-of-track has never executed, no mixed-mode disc has been tried, and the freeze's mechanism
-is still unexplained (see FINDINGS 2026-08-07g — the mitigation is real, the explanation is
-not). Those four things are the remaining work.
+✅ **Every mechanism gap is now closed.** Track switching and natural end-of-track both passed
+on 2026-08-07, the latter landing on the track boundary to the frame. See the table in
+FINDINGS 2026-08-07j.
+
+⚠ **Still not finishable**, but what remains is no longer mechanism: a real **mixed-mode disc**
+has never been tried (Jubadub's run), the **`paramErr` question** in step 5 is open, and the
+freeze's mechanism is mitigated rather than explained (FINDINGS 2026-08-07g).
 
 ## Current artifacts (staged on the Pi at `/home/csell/shared/`)
 
@@ -203,25 +205,23 @@ same total system-heap cost. `CD_RING_SEPARATE` is now the default. Full account
 size, not that we understand what a 468-byte allocation does to this machine. If this ever
 misbehaves elsewhere, start there.
 
-### 2. Multi-track and looping behaviour — **probe support BUILT, not yet run**
-**Repeat play is DONE and PASSED** (2026-08-06b). The two remaining gaps needed a probe that
-could target a chosen track and reach a track boundary; `CDPlayProbe_v7` now does both, in
-one run, with no extra reboots:
+### 2. ✅ Multi-track and looping behaviour — **BOTH PASSED on hardware 2026-08-07**
+**All three now pass.** Repeat play (2026-08-06b), the track switch (2026-08-07i) and natural
+end of track (2026-08-07j). `CDPlayProbe_v8` exercises all of it in one run:
 
-- **Phase B — track switch.** After phase A's ten seconds on the first audio track, it issues
-  a second `AudioPlay` for a *different* track and polls six seconds. The pump has to
-  recompute `gTrackStartLBA` and the play range; that has never executed on hardware.
-- **Phase C — natural end of track.** Rather than sitting through a three-minute track, it
-  starts playback **six seconds before the boundary** — the pump derives the end of the range
-  from the TOC, so the boundary arrives on schedule either way. It then watches for the status
-  byte reaching `0x13` and the position ceasing to advance, which is exactly what a looping
-  game polls for.
+- **Phase B — track switch. ✅** The pump recomputes the range and the track base, and the
+  cursor restarts for the new track rather than continuing the old count.
+- **Phase C — natural end of track. ✅** The position stops on the track boundary **to the
+  frame** (abs 33447 = LBA 33297 = track 3's start), the status byte becomes `0x13` and the
+  pump reports `state=3`, held for every poll afterwards. Reached cheaply by starting playback
+  six seconds before the boundary rather than sitting through the track.
 
 Both phases skip themselves, loudly, on a disc without a second audio track that has a
 successor in the TOC. Use a disc with three or more audio tracks.
 
-⚠ Phases B and C use the position encoding phase A discovered, so if phase A fails they are
-skipped rather than run against a guess.
+⚠ **Phase C's `AudioPlay` is REFUSED by the original driver** (`paramErr`, because the address
+is mid-track) **and the pump plays it anyway** — the handler posts before it chains. The probe
+polls regardless for exactly that reason. See the open question in step 5.
 
 ### 3. ⚠ A REAL MIXED-MODE GAME DISC — the biggest untested gap
 Everything so far used a pressed *audio* CD. Untested and materially different:
@@ -284,3 +284,18 @@ Measured 2026-08-06b, G4 mini, pressed audio CD:
   but the pre-roll is also the underrun cushion — do not shrink it blind.
 - `accRun` arrives every 120 ticks = 2.0 s; the pump does not rely on it, it refills from its
   own event loop.
+
+### 5. ⚠ OPEN: the game is told "no" while the music plays
+With the redirector installed the **driver's return code no longer indicates whether audio
+will play**. The handler posts the request to the pump *before* chaining, so the pump has
+already accepted the work when the original driver forms its own opinion — and they can
+disagree. Observed 2026-08-07i: `.AppleCD` returns `paramErr` for a **mid-track** `AudioPlay`
+while the pump resolves it correctly and plays.
+
+A game that *checks* that error could conclude CD audio is unavailable and disable its music,
+while the redirector is working perfectly. Real games mostly address track starts, which
+return `noErr`, so this is secondary — but the ship gate's standard is "every time".
+
+**Candidate:** return `noErr` when we have accepted a request we intend to service, the same
+spirit as already rewriting `AudioStatus` and `ReadQ`. Deliberately not done yet: it changes
+what the game sees, so it deserves its own run rather than riding along with something else.
