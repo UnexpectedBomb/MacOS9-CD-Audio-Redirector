@@ -2,49 +2,98 @@
 
 Written 2026-08-06 for a cold start. Read this first, then `FINDINGS.md` for evidence.
 
-## It works
+## ★ THE SHIP GATE — read this before proposing anything as finished
+
+**The music must start every single time it is supposed to. Any known path where it might not
+means this is not ready to ship. There is no acceptable rate of "sometimes the music doesn't
+play."**
+
+Stated by the user 2026-08-07, and it is not a preference — it is the definition of done for
+this project. The entire purpose of the extension is that a legacy game's `AudioPlay` produces
+music. A build that mostly does that has not fixed the problem, it has *reproduced* it: the
+user's original symptom is silent music, and an intermittent failure to start is the same
+experience with a different cause. Jubadub would have no way to tell the two apart, and
+neither would we.
+
+Concretely, this rules out shipping:
+
+- **the single-slot mailbox as it stands** (`CDAudioRedirector_v1`). It drops a request
+  whenever two arrive inside one pump pass (~170 ms). Most sequences survive because the pump
+  keeps the *newest* request, but `AudioPlay` followed quickly by `AudioPause` loses the Play,
+  and then nothing recovers until the game issues a fresh Play. Silence, no error, no counter.
+- **any variant whose failure mode is silent.** Whatever ships must be able to say that it
+  dropped something — the ring's `reqDropped` is the model. A failure we cannot see in a log
+  is one we cannot answer a bug report about.
+
+The user has explicitly chosen to keep hardening this until it works every time rather than
+ship something with a known hole. Do not offer "ship it with a caveat in the README" as a way
+out of a diagnosis that has become tedious. Finish the diagnosis.
+
+⚠ This also means the two-slot fallback is **not** automatically acceptable. It narrows the
+window; it does not close it. Three requests inside one pump pass would still lose one. It is
+only a candidate if it can be shown to make the loss impossible for the call patterns a real
+game issues, or if it carries a counter that makes any loss visible.
+
+## The mechanism works. The build does not yet.
 
 On the G4 mini, with a pressed audio CD: a legacy `AudioPlay` — the call a mixed-mode game
 issues — produces **audible music**, plus a truthful advancing position, on a machine with no
-analog CD-audio path. Verified end to end, twice, with the numbers checking out to the frame.
+analog CD-audio path. Verified end to end many times, with the numbers checking out to the
+frame. Faceless Startup-Items packaging works, unattended, from a cold boot with an empty tray.
 
-The mechanism is **complete**. What remains is packaging and validation against a real game.
+⚠ **But there is no build that both plays reliably and does not freeze the machine.** The
+request ring fixes the dropped-request hole and freezes the Mac (3 runs, 3 freezes); the
+single-slot build is rock solid (4 runs, 0 freezes) and can silently lose an `AudioPlay`.
+Against the ship gate above, neither is finishable. The open bug below is the whole job now.
 
 ## Current artifacts (staged on the Pi at `/home/csell/shared/`)
 
+**Engine block version 3.** Every reader checks it and refuses on a mismatch, so a stale
+binary announces itself rather than misreporting. The matching set:
+
 | Artifact | What it is |
 |---|---|
-| **`CDAudioRedirector_v2`** | ★ **The shipping artifact.** Same code as CDPump, faceless: drops into Startup Items, patches with no key held, opens no window, runs until shutdown. Log: `CD Audio Redirector Log` |
-| **`CDPump_v6`** | The diagnostic build of the same source. Progress window, needs option to patch, stops on a click. Log: `CD Engine Log` |
-| **`CDPlayProbe_v4`** | Stands in for a game — issues the legacy audio calls, asks if you heard music |
-| **`CDTraceRead_v2`** | Reads the engine's trace ring via `Gestalt('CDau')` |
+| **`CDAudioRedirector_v5`** | Faceless build, full request ring. ⚠ **FREEZES the machine** — not a shipping candidate, see the open bug below |
+| **`CDAudioRedirector_bisectA`** | ⚠ **Diagnostic only.** v4's memory layout, v1's behaviour. Deliberately reinstates the request-drop bug to answer one question |
+| **`CDPump_v9`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
+| **`CDPlayProbe_v5`** | Stands in for a game, and reports the pump's published state once per poll |
+| **`CDTraceRead_v3`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
 | `CDAudioSpike_v1` | The standalone Phase-1 DAE → Sound Manager spike |
-| `CDAudioRedirector_v1`, `CDPump_v4/v5` | Superseded; kept on the share as known-good controls |
+| **`CDAudioRedirector_v1` + `CDPlayProbe_v3`** | ★ **The known-good control pair.** 4 runs, 0 freezes. Keep both on the share — this pair is what every regression gets measured against |
 
-⚠ **`CDPlayProbe_v3` and `CDTraceRead_v1` are still on the share and are now WRONG** — built
-against engine version 1 and its old field layout. They refuse with a version mismatch rather
-than mislead, but delete them so the right file is the obvious one to pick.
+⚠ Everything between v1 and v5 (`CDAudioRedirector_v2/v3/v4`, `CDPump_v4`–`v8`,
+`CDPlayProbe_v4`, `CDTraceRead_v1/v2`) is superseded. The old readers refuse on the version
+check; delete them from the share so the right file is the obvious one to pick.
 
 ## How to run it
 
-**The shipping artifact** (`CDAudioRedirector_v2`) — this is now the primary path:
+⚠ **There is currently no shippable build.** The full-ring builds freeze the machine and the
+v1 build drops requests, which the ship gate above rules out. What follows is how to run the
+diagnostics.
 
-1. Put it in `System Folder:Startup Items:` (remove any earlier copy first). Reboot **with the drive empty**.
-   Nothing visible should happen; it must not appear in the Application menu.
+**Always, before any run:** delete `CD Audio Redirector Log` and `CD Play Probe Log` first.
+A run that appends to an old log has put the interesting session in the *middle* of the file,
+and "read from the last banner" has already pointed at the wrong session once.
+
+**A faceless build:**
+
+1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
+   drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v4`**. Expect music and `the CD Audio Redirector IS resident`.
-4. Evidence is `CD Audio Redirector Log` in the System Folder.
+3. Run **`CDPlayProbe_v5`**. Expect music, `the CD Audio Redirector IS resident`, and a
+   `pump: beat=… reqR=… reqW=…` line under every poll.
+4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
+   relied on as the only channel.
 
-**The diagnostic build** (`CDPump_v6`), when you want the window and manual control:
+**The diagnostic build** (`CDPump_v9`), when you want the window and manual control:
+reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
+`CDPlayProbe_v5`, then click the pump window to stop. `CDTraceRead_v3` shows the trace.
 
-1. Reboot with the drive empty. 2. Launch it **holding option** and leave it open.
-3. Insert an audio CD. 4. Run `CDPlayProbe_v4`. 5. Click the pump window to stop;
-`CDTraceRead_v2` shows the trace. Evidence is `CD Engine Log`.
-
-Logs land in the System Folder: `CD Engine Log`, `CD Play Probe Log`, `CD Trace Log`.
-They **append** — read from the last banner.
+Logs land in the System Folder: `CD Engine Log` (or `CD Audio Redirector Log` for a faceless
+build), `CD Play Probe Log`, `CD Trace Log`. They **append**, which is why they must be deleted
+before each run — see above.
 
 **Nothing persists across a restart.** Recovery from anything is always a reboot.
 
@@ -171,6 +220,9 @@ Everything so far used a pressed *audio* CD. Untested and materially different:
 This is Jubadub's run (macos9lives topic 7829); the fix is primarily for him.
 
 ### 4. Third-party README, then the handoff
+⚠ Gated by the ship gate at the top of this file: do not write the handoff for a build with a
+known path to music-not-starting. The README is not a place to disclose a hole we chose not to
+close.
 Install steps, what to expect, how to remove it, and what to report back. Then the forum
 post to topic 7829. **Both the GitHub push and the forum post need explicit permission** —
 ask every time. No em-dashes in anything published externally.
