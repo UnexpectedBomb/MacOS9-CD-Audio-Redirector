@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v5"
+#define kVersionString  "CDPlayProbe v6"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -243,15 +243,45 @@ static void PollPosition(void)
     }
 }
 
-static void RunProbe(Boolean safeMode)
+static void RunProbe(void)
 {
     int t;
 
     CDLogf("--- P5a: locate and classify the optical driver ---");
-    CDFindDriver(&gP.cd, !safeMode);
-    if (!gP.cd.found) {
-        CDLogf("no CD driver found; nothing to probe");
-        return;
+
+    /* ★ NEVER sweep the unit table by default. It hung the machine on 2026-08-07.
+     *
+     * The probe was launched with an empty tray, so the CD had no drive-queue entry,
+     * stage 1 found nothing, and the probe fell through to the full unit-table sweep —
+     * which sends Status calls to arbitrary unrelated drivers and hangs on any one that
+     * never completes. It hung on refNum -10, and the run was written off.
+     *
+     * That hazard was known: v1 of this probe swept unconditionally and hung, the sweep
+     * prints its own warning, and the pump has always passed allowFullSweep = false.
+     * Only the probe still had it armed by default, and a documented trap that is still
+     * the default is just a trap.
+     *
+     * So: the sweep is now OPT-IN (hold option), and with no CD in the drive queue the
+     * probe stops and says what to do instead of going looking. There is nothing to
+     * probe without a disc anyway. */
+    {
+        KeyMap  km2;
+        Boolean allowSweep;
+        GetKeys(km2);
+        allowSweep = KeyIsDown(km2, kOptionKeyCode);
+
+        CDFindDriver(&gP.cd, allowSweep);
+
+        if (!gP.cd.found) {
+            CDLogf("no CD driver in the drive queue.");
+            CDLogf("  ⇒ almost certainly NO DISC IN THE DRIVE. Insert an audio CD, wait");
+            CDLogf("    for it to mount, and run this again.");
+            CDLogf("  ⇒ NOT sweeping the unit table: that sends Status calls to unrelated");
+            CDLogf("    drivers and hung this machine on 2026-08-07. Hold OPTION at launch");
+            CDLogf("    if you really want the sweep.");
+            CDProgressSay("NO DISC? insert a CD and re-run");
+            return;
+        }
     }
 
     CDReadTOC(gP.cd.refNum, &gP.toc);
@@ -528,7 +558,7 @@ int main(void)
 {
     short   answer;
     KeyMap  km;
-    Boolean safeMode, logOK;
+    Boolean safeMode, logOK;   /* safeMode: informational only, see below */
 
     InitGraf(&qd.thePort);
     InitFonts();
@@ -551,7 +581,10 @@ int main(void)
      * "waiting on purpose" has to look different from "hung". */
     CDProgressOpen("\p" kVersionString " - progress");
     CDProgressSay("%s starting", kVersionString);
-    if (safeMode) CDProgressSay("shift held: SAFE MODE, no unit-table sweep");
+    /* The sweep is opt-in now (option), so shift no longer gates anything here.
+     * Kept as a no-op rather than silently repurposing a key people may still
+     * be holding out of habit. */
+    if (safeMode) CDProgressSay("shift held (the sweep is opt-in now anyway)");
 
     logOK = CDLogOpen("\pCD Play Probe Log");
     if (!logOK)
@@ -559,7 +592,7 @@ int main(void)
     CDLogBanner(kVersionString " - legacy CD-audio API probe (P5a)",
                 "ACTIVE probe: starts/stops playback and changes CD volume");
 
-    RunProbe(safeMode);
+    RunProbe();
     Cleanup();
     CDLogFlush();
 

@@ -2314,3 +2314,73 @@ difference.
 Verified before staging: all four resident engines are distinct, each app embeds its own, and
 the block really is 152 bytes with the ring separated. Both `-Wall` warnings the change
 introduced (a discarded `volatile` on the local slot pointers) are fixed rather than shipped.
+
+# Run 2026-08-07f: INVALID — the probe hung on the unit-table sweep, not on playback
+
+`CDAudioRedirector_bisectD` froze on the first run, but **it did not test bisectD.** Logs in
+`logs/2026-08-07-bisectD-invalid/`, kept because the failure is worth recording, not because
+it answers anything.
+
+## What happened
+
+The tray was empty when the probe ran. The redirector says so:
+
+```
+ReadTOC first/last FAILED err=-65 (no disc, or the driver does not implement ReadTOC)
+pump: no TOC at startup (empty drive?) - will re-read on the first play request
+```
+
+With no disc, the CD driver has no **drive-queue** entry, so the probe's stage 1 found only
+`refNum -56 'disk'` and `-42`. It then fell through to stage 2 — the **full unit-table sweep**
+— and hung on `refNum -10`. The probe's own warning, printed one line earlier:
+
+> this stage sends Status calls to unrelated drivers and can hang on one that never completes
+> the call
+
+## Why this is not the freeze we are chasing
+
+- **0 polls.** The probe never reached the poll loop.
+- **0 requests serviced.** No `AudioPlay` was ever issued.
+- **Nothing was playing.** Every previous freeze was seconds *into* playback, with music
+  audible and the pump measurably healthy.
+- The hang is at a different, documented hazard entirely.
+
+**bisectD is untested and the question is still open.**
+
+## ⚠ The probe should never have been able to do this
+
+The hazard was known and paid for: v1 of this probe swept unconditionally and hung the
+machine, the sweep prints its own warning, and the pump has always passed
+`allowFullSweep = false`. Only the probe still had it **armed by default** — shift disabled
+it, so the dangerous path was what you got unless you knew to hold a key.
+
+A documented trap that is still the default is just a trap. Fixed in **`CDPlayProbe_v6`**:
+
+- the sweep is now **opt-in** (hold option), not opt-out;
+- with no CD in the drive queue the probe **stops and says what to do**:
+
+```
+no CD driver in the drive queue.
+  ⇒ almost certainly NO DISC IN THE DRIVE. Insert an audio CD, wait for it to
+    mount, and run this again.
+  ⇒ NOT sweeping the unit table: that sends Status calls to unrelated drivers
+    and hung this machine on 2026-08-07. Hold OPTION at launch if you really
+    want the sweep.
+```
+
+There is nothing to probe without a disc, so refusing costs nothing and removes a way to lose
+a reboot.
+
+## Re-run bisectD
+
+Same protocol, with the disc **confirmed mounted** before launching the probe:
+
+1. Delete both logs. `CDAudioRedirector_bisectD` in Startup Items.
+2. Reboot with the tray empty.
+3. **Insert the disc and wait for it to appear on the desktop.**
+4. Run **`CDPlayProbe_v6`**. If it says "no CD driver in the drive queue", the disc has not
+   mounted — wait and run it again rather than pressing on.
+5. If it survives, run the probe three times.
+
+The build config line will confirm what is running:
+`CD_RING_MODE=1 ringEntries=16 ringSeparate=1 faceless=1 structBytes=152`.
