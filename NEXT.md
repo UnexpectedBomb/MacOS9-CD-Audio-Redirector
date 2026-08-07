@@ -237,6 +237,19 @@ Everything so far used a pressed *audio* CD. Untested and materially different:
 
 This is Jubadub's run (macos9lives topic 7829); the fix is primarily for him.
 
+### 3b. Publication hygiene — DONE, and one decision recorded
+The working tree is sanitized: the eight `push-to-pi.sh` scripts are one
+`scripts/stage-artifacts.sh` with no machine details, reading an untracked `.stage-target`.
+`scripts/publish-dist.sh` scrubs the build-machine account name out of the shipped binaries,
+which Retro68's prebuilt newlib bakes in via its own `__FILE__` strings and no compiler flag
+can reach. Tracked tree scans clean.
+
+**Decision, 2026-08-07: git history keeps the old values, and that is accepted.** Roughly
+thirteen commits contain `pi3.local`, nine `csell`, eight `claude@`. Sanitizing the tree does
+not sanitize history, a public repo exposes it, and the alternatives were a fresh-history clone
+or `git filter-repo`. The user chose to accept it. **Do not re-raise this**; it is settled, and
+the history is worth more as a record of the investigation than the exposure costs.
+
 ### 4. Third-party README, then the handoff
 ⚠ Gated by the ship gate at the top of this file: do not write the handoff for a build with a
 known path to music-not-starting. The README is not a place to disclose a hole we chose not to
