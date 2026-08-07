@@ -2454,3 +2454,74 @@ track 1 do not establish that. Still open, all of it predating the freeze invest
    TOCs, and the data-read-during-playback contention has never been exercised.
 4. **Soak.** Three runs is enough to retire a freeze that reproduced 4 for 4. It is not enough
    to claim "every time".
+
+# Run 2026-08-07h: `CDAudioRedirector_v7` soak — six runs, nothing dropped
+
+Six probe runs against one v7 install. Logs in `logs/2026-08-07-v7-soak-x6/`.
+
+```
+build config: CD_RING_MODE=1  ringEntries=16  ringSeparate=1  faceless=1  structBytes=152
+
+requests:  6 posted,  6 serviced, 0 DROPPED
+requests: 12 posted, 12 serviced, 0 DROPPED
+requests: 18 posted, 18 serviced, 0 DROPPED
+requests: 24 posted, 24 serviced, 0 DROPPED
+requests: 30 posted, 30 serviced, 0 DROPPED
+requests: 36 posted, 36 serviced, 0 DROPPED
+```
+
+Music audible all six times, 240 polls, no freeze, no underruns. **36 of 36 requests serviced,
+none lost.** The v7 binary reproduces bisectD's result, so the shipping artifact carries the
+configuration and not just the design.
+
+⚠ **The probe was `CDPlayProbe_v6`, not v7** — v7 was staged at 13:19 and this run started at
+13:20, so the older one was to hand. **Phases B and C did not run**; track switching and
+natural end-of-track remain untested.
+
+## The 10–15 second pause: located, not explained
+
+The user saw one run pause visibly before the music started. Timestamps place it, and rule
+several things out.
+
+| | play 1 | 2 | 3 | **4** | 5 | 6 |
+|---|---|---|---|---|---|---|
+| gap since previous play ended | — | 5.1 s | 6.8 s | **62.0 s** | 6.2 s | 5.0 s |
+| pre-roll (inter-poll gap after playback starts) | 3.4 s | 1.6 s | 1.2 s | **1.1 s** | 1.4 s | 1.3 s |
+
+**Run 4 is the one.** It carries ~55 seconds more than its neighbours between the previous
+play ending and its own starting — which covers answering the dialog, relaunching, discovery,
+the TOC read, and `AudioPlay`.
+
+What that rules out:
+
+- **Not the pump.** Run 4's pre-roll was **1.1 s**, the *fastest* of the six. Whatever stalled,
+  the drive was already warm by the time the play request arrived — so the stall was upstream
+  of the pump, not in it.
+- **Not a lost or retried request.** 24 of 24 serviced at that point, `0 DROPPED`.
+- **Not audible in the result.** 0 underruns, music played, position advanced normally.
+- **Not an error path.** Run 4's preamble is **byte-identical** to run 3's: same calls, same
+  results, no retries.
+
+So the delay sits before `AudioPlay` reached the pump, in the probe's own startup — most
+plausibly the **drive spinning up**, absorbed by the probe's `CDReadTOC`, which would also
+explain why the subsequent pre-roll was warm. **That is consistent with the evidence, not
+proven by it**, and the honest position is that the log could not answer it.
+
+## Which is itself the finding: an untimed breadcrumb cannot show a stall
+
+`CDLogStep` is emitted immediately before every driver call — precisely the right place to
+measure between — and carried no time. Only the poll lines were timestamped, and the pause
+happened before polling began. The log contained the stall and gave no way to see it.
+
+Fixed: every STEP line now carries a tick count.
+
+```
+STEP [t=19386] DriverGestalt 'devt' refNum=-67
+```
+
+Any gap is now visible by subtraction, and the call that stalled names itself. This would have
+answered the question from the log already in hand, with no extra run.
+
+*General lesson, and the second time this project has learned a version of it: instrumentation
+has to be able to show the thing you will eventually want to ask about. The first time it was
+a heartbeat on a dead channel; this time it was a breadcrumb with no clock.*

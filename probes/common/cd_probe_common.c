@@ -209,7 +209,18 @@ void CDLogStep(const char *fmt, ...)
     va_end(ap);
     if (n < 0) return;
 
-    CDLogf("STEP %s", buf);
+    /* ★ TIMESTAMPED, because an untimed breadcrumb cannot show a stall.
+     *
+     * A run on 2026-08-07 paused visibly for 10-15 seconds before the music started.
+     * The logs could not say where: only the poll lines carried a time, and the pause
+     * happened before polling began. The preamble of the slow run was byte-identical
+     * to a fast one — same calls, same results, no errors — so the log contained the
+     * stall and no way to see it.
+     *
+     * Every STEP line is emitted immediately before a driver call, which makes them
+     * exactly the right places to measure between. With a tick count on each, any gap
+     * is visible by subtraction and the call that stalled names itself. */
+    CDLogf("STEP [t=%ld] %s", (long)TickCount(), buf);
     CDProgressSay("%s", buf);     /* on screen too: this is the hang breadcrumb */
 }
 
