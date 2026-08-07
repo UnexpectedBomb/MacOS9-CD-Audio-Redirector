@@ -41,7 +41,7 @@ issues — produces **audible music**, plus a truthful advancing position, on a 
 analog CD-audio path. Verified end to end many times, with the numbers checking out to the
 frame. Faceless Startup-Items packaging works, unattended, from a cold boot with an empty tray.
 
-✅ **The freeze is solved.** `CDAudioRedirector_v7` runs clean and drops nothing: 16 request
+✅ **The freeze is solved.** `CDAudioRedirector_v8` runs clean and drops nothing: 16 request
 slots with the ring in its own system-heap allocation, so the published block stays at 152
 bytes — essentially v1's 148, the size profile with the most hardware behind it. Three runs,
 120 polls, 18 of 18 requests serviced, 0 dropped.
@@ -56,15 +56,15 @@ freeze's mechanism is mitigated rather than explained (FINDINGS 2026-08-07g).
 
 ## Current artifacts (staged on the Pi at `/home/csell/shared/`)
 
-**Engine block version 3.** Every reader checks it and refuses on a mismatch, so a stale
+**Engine block version 4.** Every reader checks it and refuses on a mismatch, so a stale
 binary announces itself rather than misreporting. The matching set:
 
 | Artifact | What it is |
 |---|---|
-| **`CDAudioRedirector_v7`** | ★ **The current build.** Faceless, 16 request slots, ring in its own allocation (block 152 B). No freeze, nothing dropped |
-| **`CDPump_v11`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v7`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
-| **`CDTraceRead_v3`** | Reads the engine's trace ring via `Gestalt('CDau')` |
+| **`CDAudioRedirector_v8`** | ★ **The current build.** Faceless, 16 request slots, ring in its own allocation (block 160 B). No freeze, nothing dropped |
+| **`CDPump_v12`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
+| **`CDPlayProbe_v9`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
+| **`CDTraceRead_v4`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
 | `CDAudioSpike_v1` | The standalone Phase-1 DAE → Sound Manager spike |
@@ -78,11 +78,11 @@ right file is the obvious one to pick.
 
 **How to tell what you actually ran:** every build now logs its own configuration from the
 compiled constants. The current one says
-`build config: CD_RING_MODE=1  ringEntries=16  ringSeparate=1  faceless=1  structBytes=152`.
+`build config: CD_RING_MODE=1  ringEntries=16  ringSeparate=1  faceless=1  structBytes=160`.
 
 ## How to run it
 
-**`CDAudioRedirector_v7` is the build to run.** It meets the ship gate's two mechanical
+**`CDAudioRedirector_v8` is the build to run.** It meets the ship gate's two mechanical
 requirements — it does not freeze and it drops nothing — but it is not validated for release;
 see the remaining work below.
 
@@ -95,14 +95,14 @@ and "read from the last banner" has already pointed at the wrong session once.
 1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
    drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v7`**. Expect music, `the CD Audio Redirector IS resident`, and a
+3. Run **`CDPlayProbe_v9`**. Expect music, `the CD Audio Redirector IS resident`, and a
    `pump: beat=… reqR=… reqW=…` line under every poll.
 4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
    relied on as the only channel.
 
-**The diagnostic build** (`CDPump_v11`), when you want the window and manual control:
+**The diagnostic build** (`CDPump_v12`), when you want the window and manual control:
 reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
-`CDPlayProbe_v7`, then click the pump window to stop. `CDTraceRead_v3` shows the trace.
+`CDPlayProbe_v9`, then click the pump window to stop. `CDTraceRead_v4` shows the trace.
 
 ⚠ **Always confirm the disc has mounted before launching the probe.** With no disc there is no
 CD in the drive queue; the probe now refuses rather than sweeping the unit table, which hung
@@ -285,7 +285,8 @@ Measured 2026-08-06b, G4 mini, pressed audio CD:
 - `accRun` arrives every 120 ticks = 2.0 s; the pump does not rely on it, it refills from its
   own event loop.
 
-### 5. ⚠ OPEN: the game is told "no" while the music plays
+### 5. ✅ ADDRESSED in `CDAudioRedirector_v8` — awaiting hardware
+The game is no longer told "no" while the music plays.
 With the redirector installed the **driver's return code no longer indicates whether audio
 will play**. The handler posts the request to the pump *before* chaining, so the pump has
 already accepted the work when the original driver forms its own opinion — and they can
@@ -296,6 +297,13 @@ A game that *checks* that error could conclude CD audio is unavailable and disab
 while the redirector is working perfectly. Real games mostly address track starts, which
 return `noErr`, so this is secondary — but the ship gate's standard is "every time".
 
-**Candidate:** return `noErr` when we have accepted a request we intend to service, the same
-spirit as already rewriting `AudioStatus` and `ReadQ`. Deliberately not done yet: it changes
-what the game sees, so it deserves its own run rather than riding along with something else.
+**Done, narrowly.** The handler returns `noErr` only when *all four* hold: the request is one
+the pump acts on; a pump is alive; the original refused; and it refused with `paramErr` or
+`controlErr` — never with `offLinErr`/`nsDrvErr`/`ioErr`, which mean there is no disc and where
+claiming success would manufacture silence.
+
+Two counters make it honest: **`errOverrides`** (refusals we answered `noErr`) and
+**`playResolveFails`** (plays accepted and then unresolvable — the one case where the override
+would convert a refusal into silence). Both appear in the pump log and the probe report, and a
+non-zero `playResolveFails` makes both logs say the override is lying. Full reasoning in
+FINDINGS 2026-08-07k.
