@@ -342,10 +342,10 @@ afterDrain:
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v6"
+#define kVersionString  "CD Audio Redirector v7"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v10"
+#define kVersionString  "CDPump v11"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')

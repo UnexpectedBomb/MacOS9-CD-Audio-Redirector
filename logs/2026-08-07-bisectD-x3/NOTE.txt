@@ -1,0 +1,5 @@
+Only the probe log was on the share for this run; the redirector's own log was not
+copied. Not a problem: the probe log is the channel that has survived every freeze,
+and it carries the decisive numbers (requests posted/serviced/dropped, and the pump
+state under every poll). Recorded here so nobody later reads the missing file as
+evidence of anything.

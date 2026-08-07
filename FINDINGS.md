@@ -2384,3 +2384,73 @@ Same protocol, with the disc **confirmed mounted** before launching the probe:
 
 The build config line will confirm what is running:
 `CD_RING_MODE=1 ringEntries=16 ringSeparate=1 faceless=1 structBytes=152`.
+
+# Run 2026-08-07g: bisectD passes — and the confound is split
+
+`CDAudioRedirector_bisectD`, disc mounted, probe run three times. **Music every time, 120
+polls, no freeze — and nothing dropped.** Logs in `logs/2026-08-07-bisectD-x3/`.
+
+```
+requests:  6 posted,  6 serviced, 0 DROPPED
+requests: 12 posted, 12 serviced, 0 DROPPED
+requests: 18 posted, 18 serviced, 0 DROPPED
+```
+
+The pump-state lines show `reqR=0 reqW=3` at the start of each run — the same burst of three
+requests inside one pump pass that overflowed bisectB's two slots on every single run. With
+sixteen slots, nothing is lost.
+
+## The result
+
+| build | slots | block | ring storage | total heap | outcome |
+|---|---|---|---|---|---|
+| v1 | 1 | ~148 B | inline | ~148 B | clean ×4 |
+| bisectB | 2 | 188 B | inline | 188 B | clean ×3, **dropped 1 per run** |
+| v2–v4, bisectA | 16 | 468 B | inline | 468 B | froze ×4 |
+| **bisectD** | **16** | **152 B** | **separate** | **~472 B** | **clean ×3, 0 dropped** |
+
+bisectD and the frozen builds take **the same total number of bytes** from the system heap.
+The only difference is that one of them is a single 468-byte block and the other is a
+152-byte block plus a separate 320-byte one. Opposite outcomes.
+
+**So the trigger is the size of that one allocation, not how much we consume overall.** That
+is a sharp, reproducible claim, and it is the first thing in this investigation that both
+survives contact with hardware and points somewhere specific.
+
+## ⚠ The mechanism is still unknown, and I am not going to pretend otherwise
+
+We know a 468-byte `NewPtrSysClear` in the system heap kills this machine during CD-DA
+streaming and a 152-byte one does not, with 1.3 MB free either way. We do not know why. Every
+candidate we could name has been excluded by measurement — heap exhaustion, our behaviour, our
+bookkeeping, bounds, a stale fragment, USB 2.0.
+
+What makes this shippable anyway, rather than a magic number: **bisectD's block is 152 bytes,
+essentially v1's 148** — the size profile with the most hardware runs behind it and no failures
+ever. We are not tuning to a threshold discovered on this machine; we are staying inside the
+envelope that was already proven, and getting the full ring by putting it somewhere else.
+
+That is a real mitigation, not a rationalisation. But it is not an explanation, and if this
+ever misbehaves on another machine, this paragraph is where to start.
+
+## Promoted to the shipping build
+
+`CD_RING_SEPARATE` now defaults to 1, so **`CDAudioRedirector_v7`** and **`CDPump_v11`** carry
+the proven configuration. Verified from the compiled constants: `sizeof = 152`,
+`entries = 16`, `separate = 1`. Rebuilt from a clean tree.
+
+**This is the first build that meets the ship gate on both counts: it does not freeze, and it
+drops nothing.**
+
+## What is still untested before this can go to Jubadub
+
+The gate says the music must start every time it is supposed to. Three ten-second plays of
+track 1 do not establish that. Still open, all of it predating the freeze investigation:
+
+1. **A second `AudioPlay` for a *different* track.** `CDPlayProbe` always targets the first
+   audio track, so a track *switch* — new `gTrackStartLBA`, new range — has never run.
+2. **Natural end of track.** The `playState = 3` / status `0x13` path has never executed on
+   hardware; the probe always stops at ~12 s and track 1 is 185 s long.
+3. **A real mixed-mode disc**, where track 1 is data. `DecodePos` has only ever seen all-audio
+   TOCs, and the data-read-during-playback contention has never been exercised.
+4. **Soak.** Three runs is enough to retire a freeze that reproduced 4 for 4. It is not enough
+   to claim "every time".

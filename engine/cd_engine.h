@@ -237,9 +237,24 @@ typedef struct {
 #endif
 
 /* 1 = the request ring lives in its own system-heap allocation and CDEnginePublic holds
- * only a pointer to it. See the comment on the reqRing member for what that separates. */
+ * only a pointer to it.
+ *
+ * ★ NOW THE DEFAULT, because hardware settled it on 2026-08-07. Sixteen slots inline
+ * makes the block 468 bytes and freezes the machine, four runs out of four. Sixteen
+ * slots in a separate allocation keeps the block at 152 — essentially v1's 148, the
+ * most-tested and never-failed size — and ran clean three times with **zero requests
+ * dropped**. Same total bytes taken from the system heap either way, so the trigger is
+ * the size of that one block and not how much we consume overall.
+ *
+ * Why this is the shipping configuration and not just another experiment: it is the
+ * only build so far that both survives and loses nothing, which is what the ship gate
+ * in NEXT.md actually requires.
+ *
+ * ⚠ The MECHANISM is still unknown. We know a 468-byte block in the system heap kills
+ * this machine during CD-DA streaming and a 152-byte one does not, and we cannot say
+ * why. Setting this to 0 reinstates the failure, so leave it alone without a reason. */
 #ifndef CD_RING_SEPARATE
-#define CD_RING_SEPARATE 0
+#define CD_RING_SEPARATE 1
 #endif
 
 typedef struct {
