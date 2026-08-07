@@ -2593,3 +2593,68 @@ Two consequences worth separating:
 
 No run showed anything like the 10–15 s stall. The STEP timestamps are in place now
 (`STEP [t=6570] Control csCode=104`), so if it returns, the stalling call names itself.
+
+# Run 2026-08-07j: PHASE C PASSES — the last mechanism gap is closed
+
+`CDPlayProbe_v8` against `CDAudioRedirector_v7`, three runs. Logs in
+`logs/2026-08-07-phaseC-pass/`.
+
+```
+⚠ the original driver REFUSED this address (err=-50)
+  ... polling anyway — watch `state` in the pump lines below
+★ status byte reached 0x13 (COMPLETED) at poll 22, abs frame 33447
+  pump: beat=1896 reqSeen=7 state=3 absF=33447 | reqR=7 reqW=7 drop=0 | under=0
+⇒ end-of-track watch: completed status SEEN (0x13), position held in 27 of 48 polls
+```
+
+And the engine, all three runs:
+
+```
+pump: reached the end of the range; holding the final position and reporting completed
+```
+
+## The numbers
+
+| | |
+|---|---|
+| requested | play LBA 32847 .. 33297 = 450 sectors = **6.00 s** |
+| completion detected | poll 22 / 24 / 22 = **5.50 / 6.00 / 5.50 s** |
+| final position | abs frame **33447** → LBA **33297** |
+| track 3 starts at | LBA **33297** |
+
+**The position stops exactly on the track boundary, to the frame**, at exactly the moment the
+range predicted. The status byte becomes `0x13`, the pump reports `state=3`, and the position
+is then held — 27, 26 and 29 of the 48 polls, which is every poll after completion.
+
+This is the behaviour a looping game polls for, and the reason the community symptom was
+"music never loops": the unpatched driver leaves the position frozen at a stale value forever,
+so track end never arrives. It now arrives, on time, at the right frame.
+
+24 of 24 requests serviced, **0 dropped**, music audible in all three runs.
+
+## Status: every mechanism gap this project set out to close is now closed
+
+| capability | state |
+|---|---|
+| Legacy `AudioPlay` produces audible digital audio | ✅ |
+| Truthful advancing position (synthesised) | ✅ to the frame |
+| Repeat / restart of the same track | ✅ 2026-08-06b |
+| `AudioPause` / resume / `AudioStop` | ✅ |
+| Faceless Startup-Items packaging, unattended boot | ✅ 2026-08-06d |
+| Disc inserted after launch (TOC re-read) | ✅ 2026-08-06c |
+| Clean shutdown via the quit Apple event | ✅ |
+| No requests dropped (16-slot ring) | ✅ 36/36 and 24/24 |
+| No freeze (block kept at 152 bytes) | ✅ 12 clean runs |
+| **Track switch** | ✅ 2026-08-07i |
+| **Natural end of track, status 0x13** | ✅ **this run** |
+
+## What is left, and it is no longer mechanism
+
+1. **A real mixed-mode disc** — track 1 data, audio after it. `DecodePos` has only ever seen
+   all-audio TOCs, and the data-read-during-playback contention has never been exercised.
+   This is Jubadub's run; the fix is for him.
+2. **The `paramErr` question** (2026-08-07i) — a game issuing a mid-track `AudioPlay` is told
+   no while the music plays. Still open, deliberately unchanged.
+3. **The freeze mechanism** — mitigated by keeping the block at v1's proven size, never
+   explained. If this misbehaves on another machine, start there.
+4. **A third-party README and the handoff.**
