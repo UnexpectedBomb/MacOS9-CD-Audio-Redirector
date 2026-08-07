@@ -2233,7 +2233,7 @@ be relying on.
 
 ## Next, in priority order
 
-### 1. The decisive test, and it needs no new build
+### 1. ~~The decisive test~~ — ⚠ WITHDRAWN 2026-08-07, it would have measured nothing
 Run **`CDAudioRedirector_v6`** (16 slots, 468 bytes — freezes reliably, 4 for 4) **with the
 USB 2.0 stack disabled.**
 
@@ -2257,3 +2257,60 @@ would not transfer with confidence to Jubadub's.
 
 Verified before staging: all three resident engines are distinct, each app embeds the right
 one, and the sizes are 188 / 228 / 468.
+
+# 2026-08-07e: the USB 2.0 hypothesis was never testable — it was already the condition
+
+The user pointed out that **the EHCI activator app is never running during these audio
+tests.** So USB 2.0 has been inactive for every run in this investigation, and the "run it
+again with USB 2.0 disabled" test proposed in the previous entry would have changed nothing.
+It is withdrawn before it cost a reboot.
+
+**How I got it wrong:** I saw `EHCIUIM_init.log`, `USB Disk Log` and `USB2 Activate Log`
+sitting on the Pi share and treated their presence as evidence that the stack was live during
+our runs. They were files left from an earlier session that day, on an earlier boot. Presence
+of a log file is not evidence of activity contemporaneous with anything — the timestamps were
+right there and said 17:36–17:42 against a CD run at 17:54, in a different boot.
+
+That retires the leading explanation. To be explicit about what is now excluded:
+
+- **not heap exhaustion** — 1.39 MB free, measured
+- **not the ring's behaviour** — bisectA froze with v1's behaviour
+- **not the ring's bookkeeping** — idle and consistent at every freeze
+- **not the pump, drain loop or logger** — all measured healthy at the last sample
+- **not a bounds or layout error** — computed with the real PowerPC ABI
+- **not a stale engine PEF** — byte-compared against the built one
+- **not the USB 2.0 stack** — inactive throughout, per the user
+
+What remains is the raw correlation with the size of one allocation, and no mechanism.
+
+## The confound nobody had separated
+
+Every build so far changed **two** things together, and they are not the same claim:
+
+- the **size of the published block**, and
+- the **total bytes taken from the system heap**.
+
+`CDAudioRedirector_bisectD` splits them. The ring moves into its own `NewPtrSysClear`, and
+`CDEnginePublic` holds a pointer instead of the array. Sixteen entries, so total consumption
+matches the builds that froze — but the block itself drops to **152 bytes**, essentially v1's.
+
+The producer and consumer code is **untouched**: `reqRing[i]` indexes a pointer exactly as it
+indexed an array, so the same source compiles for both and the behaviour cannot be the
+difference.
+
+| build | slots | block | ring storage | total | result |
+|---|---|---|---|---|---|
+| v1 | 1 | ~148 B | inline | ~148 B | clean ×4 |
+| bisectB | 2 | 188 B | inline | 188 B | clean ×3 |
+| bisectC | 4 | 228 B | inline | 228 B | *not yet run* |
+| v2–v4, bisectA | 16 | 468 B | inline | 468 B | froze ×4 |
+| **bisectD** | **16** | **152 B** | **separate** | **~472 B** | **the experiment** |
+
+- **bisectD clean** ⇒ the trigger is the size of *that block*, and bisectD **is the shipping
+  candidate**: sixteen slots, nothing dropped, which is what the ship gate demands.
+- **bisectD freezes** ⇒ the trigger is *total* system-heap consumption, and the answer is to
+  keep the whole footprint small — bisectC, four slots — rather than moving bytes around.
+
+Verified before staging: all four resident engines are distinct, each app embeds its own, and
+the block really is 152 bytes with the ring separated. Both `-Wall` warnings the change
+introduced (a discarded `volatile` on the local slot pointers) are fixed rather than shipped.

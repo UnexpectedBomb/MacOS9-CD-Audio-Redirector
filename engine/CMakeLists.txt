@@ -274,3 +274,74 @@ add_custom_command(TARGET CDAudioRedirector_bisectC_disk POST_BUILD
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_bisectC
     COMMENT "Pushing CDAudioRedirector_bisectC to pi3.local" VERBATIM)
+
+# --- bisectD: SIXTEEN slots, ring in its OWN allocation -----------------------
+#
+# The experiment that separates "size of the published block" from "total bytes taken
+# from the system heap" - the two things every build so far has changed together.
+#
+# 16 entries, so the total footprint matches the builds that froze, but the block
+# itself drops to ~152 bytes because it now holds a pointer instead of the array. The
+# producer and consumer code is untouched: reqRing[i] indexes a pointer exactly as it
+# indexed an array.
+#
+#   clean   -> the block size was the trigger, and this IS the shipping candidate:
+#              16 slots, nothing dropped, which is what the ship gate requires
+#   freezes -> total system-heap consumption is the trigger, and the answer is a small
+#              footprint (bisectC, 4 slots) rather than moving bytes around
+add_application(CDAudioRedirector_bisectD
+    cd_engine_install.c
+    cd_pump_audio.c
+    ../probes/common/cd_probe_common.c
+    cd_engine_faceless.r
+    ${CMAKE_CURRENT_BINARY_DIR}/engine_pef_ring16sep.r
+    TYPE     "APPL"
+    CREATOR  "CDbD")
+target_compile_definitions(CDAudioRedirector_bisectD PRIVATE CD_FACELESS=1 kEngineReqRingEntries=16 CD_RING_SEPARATE=1)
+target_include_directories(CDAudioRedirector_bisectD PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../probes/common)
+target_link_libraries(CDAudioRedirector_bisectD DriverLoaderLib InterfaceLib)
+if(TARGET retrocrt)
+    add_dependencies(CDAudioRedirector_bisectD retrocrt)
+endif()
+
+# The RESIDENT engine must be built with the same switch, since the producer lives in
+# it. A bisect whose two halves disagree measures nothing.
+add_library(cd_engine_ring16sep SHARED cd_engine_driver.c)
+target_compile_definitions(cd_engine_ring16sep PRIVATE kEngineReqRingEntries=16 CD_RING_SEPARATE=1)
+set_target_properties(cd_engine_ring16sep PROPERTIES
+    LINK_FLAGS "-Wl,-bE:${CMAKE_CURRENT_SOURCE_DIR}/cd_engine.exp")
+target_include_directories(cd_engine_ring16sep PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(cd_engine_ring16sep DriverServicesLib NameRegistryLib InterfaceLib)
+add_custom_command(OUTPUT cd_engine_ring16sep.pef
+    COMMAND ${MAKE_PEF} libcd_engine_ring16sep.so -o cd_engine_ring16sep.pef
+    COMMAND /usr/bin/env python3 ${CMAKE_CURRENT_SOURCE_DIR}/patch-pef-main.py
+            cd_engine_ring16sep.pef DoDriverIO
+    DEPENDS cd_engine_ring16sep ${CMAKE_CURRENT_SOURCE_DIR}/patch-pef-main.py)
+add_custom_command(OUTPUT engine_pef_ring16sep.r
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/embed-pef.sh
+            cd_engine_ring16sep.pef engine_pef_ring16sep.r cdPF 128
+    DEPENDS cd_engine_ring16sep.pef ${CMAKE_CURRENT_SOURCE_DIR}/embed-pef.sh)
+
+add_custom_command(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectD.img
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-size-flags.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectD.bin 14C0
+    COMMAND /usr/bin/env python3 ${WRAP_APM}
+            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectD.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectD.img
+            CDAudioRedirector_bisectD
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectD.dsk ${WRAP_APM}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-size-flags.sh
+    COMMENT "Checking SIZE flags, then wrapping CDAudioRedirector_bisectD" VERBATIM)
+add_custom_target(CDAudioRedirector_bisectD_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectD.img)
+add_dependencies(CDAudioRedirector_bisectD_disk CDAudioRedirector_bisectD_APPL)
+add_custom_command(TARGET CDAudioRedirector_bisectD_disk POST_BUILD
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+            ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_bisectD
+    COMMENT "Pushing CDAudioRedirector_bisectD to pi3.local" VERBATIM)

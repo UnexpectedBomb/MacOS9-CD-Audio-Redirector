@@ -236,6 +236,12 @@ typedef struct {
 #define CD_RING_MODE 1
 #endif
 
+/* 1 = the request ring lives in its own system-heap allocation and CDEnginePublic holds
+ * only a pointer to it. See the comment on the reqRing member for what that separates. */
+#ifndef CD_RING_SEPARATE
+#define CD_RING_SEPARATE 0
+#endif
+
 typedef struct {
     OSType          magic;          /* kEngineMagic                             */
     /* ★ 2 = the request ring replaced the single-slot mailbox, which moved every
@@ -296,7 +302,31 @@ typedef struct {
     volatile long   reqWrite;       /* monotonic count of requests POSTED       */
     volatile long   reqRead;        /* monotonic count CONSUMED (pump writes)   */
     volatile long   reqDropped;     /* entries overwritten before the pump saw  */
+
+    /* ★ CD_RING_SEPARATE splits the two things that have been confounded all along.
+     *
+     * Eleven runs say the fault tracks the SIZE of this one block and nothing else:
+     * ~148 B clean, 188 B clean, 468 B frozen — on a machine with 1.4 MB of system heap
+     * free, so it is not exhaustion, and with the USB 2.0 stack inactive throughout, so
+     * it is not that either. But "size of this block" and "total bytes we take from the
+     * system heap" have moved together in every build so far, and they are not the same
+     * claim.
+     *
+     * With the ring in its own allocation the block returns to ~152 bytes while the
+     * total consumption stays exactly what the frozen builds had. Every `reqRing[i]`
+     * expression compiles unchanged, because an array and a pointer index identically —
+     * so the producer and consumer code is untouched and cannot be the difference.
+     *
+     *   clean   ⇒ the trigger is the SIZE OF THIS BLOCK, and we can ship the full
+     *             16-slot ring with nothing dropped — which is what the ship gate wants
+     *   freezes ⇒ the trigger is TOTAL system-heap consumption, and the answer is to
+     *             keep the whole footprint small, not to move bytes around
+     */
+#if CD_RING_SEPARATE
+    volatile CDEngineRequest *reqRing;   /* its own NewPtrSysClear */
+#else
     CDEngineRequest reqRing[kEngineReqRingEntries];
+#endif
 
     /* Pump -> engine, purely informational so the trace can show it. */
     volatile short  pumpAlive;

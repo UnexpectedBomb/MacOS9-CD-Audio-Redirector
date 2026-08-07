@@ -217,7 +217,14 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
      * chain — and puts every read in the pump application's task context, where
      * Phase 1 proved the streaming engine works. If no pump is running the request is
      * simply unserviced: nothing crashes. */
-    if (pb != NULL && gPub != NULL && gPub->patched) {
+    /* When the ring is inline this is an array and the test is trivially true, which
+     * -Wall rightly complains about; only the separate-allocation build needs it. */
+#if CD_RING_SEPARATE
+#define kRingUsable (gPub->reqRing != NULL)
+#else
+#define kRingUsable 1
+#endif
+    if (pb != NULL && gPub != NULL && gPub->patched && kRingUsable) {
         short cs = ((CntrlParam *)pb)->csCode;
 
         if (cs == kcsAudioPlay || cs == kcsAudioTrackSearch ||
@@ -227,11 +234,12 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
                 (const unsigned char *)((CntrlParam *)pb)->csParam;
             long             w = gPub->reqWrite;
 #if CD_RING_MODE
-            CDEngineRequest *e = &gPub->reqRing[w & (kEngineReqRingEntries - 1)];
+            volatile CDEngineRequest *e =
+                &gPub->reqRing[w & (kEngineReqRingEntries - 1)];
 #else
             /* Bisect: v1's behaviour, v4's memory. Always slot 0, so the producer's
              * store lands at a FIXED offset exactly as it did in v1. */
-            CDEngineRequest *e = &gPub->reqRing[0];
+            volatile CDEngineRequest *e = &gPub->reqRing[0];
 #endif
             int              i;
 
@@ -428,6 +436,16 @@ static OSErr EngineInit(CDEngineInfo *info)
         gPub = (CDEnginePublic *)NewPtrSysClear((Size)sizeof(CDEnginePublic));
         if (gPub == NULL) { info->status = kEngineNoMemory; return noErr; }
     }
+#if CD_RING_SEPARATE
+    /* The request ring in its own block. Allocated BEFORE the descriptor is patched, so
+     * the handler can never see a non-NULL gPub with a NULL ring — and it NULL-checks
+     * anyway, because "cannot happen" is how the interrupt-level code gets to crash. */
+    if (gPub->reqRing == NULL) {
+        gPub->reqRing = (volatile CDEngineRequest *)NewPtrSysClear(
+                            (Size)(kEngineReqRingEntries * sizeof(CDEngineRequest)));
+        if (gPub->reqRing == NULL) { info->status = kEngineNoMemory; return noErr; }
+    }
+#endif
     /* ★ Record what the system heap looks like AFTER we have taken our share. This is
      * the number the freeze investigation now turns on: the fault tracks the size of
      * this block and nothing else, so how much room was left matters more than any

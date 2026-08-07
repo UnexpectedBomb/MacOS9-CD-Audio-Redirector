@@ -139,10 +139,13 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
          * and then jumped lastSeq to that sequence number, stepping silently over
          * anything that had arrived since it last looked. The hardware logs show it
          * happening in every run — the request numbers skip. See cd_engine.h. */
+#if CD_RING_SEPARATE
+        if (pub->reqRing == NULL) { CDPumpIdle(); goto afterDrain; }
+#endif
         while (pub->reqRead != pub->reqWrite) {
             long             backlog = pub->reqWrite - pub->reqRead;
             long             seq;
-            CDEngineRequest *e;
+            volatile CDEngineRequest *e;
             short            cs;
             unsigned char    param[16];
             int              i;
@@ -222,6 +225,9 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 #endif
         }
 
+#if CD_RING_SEPARATE
+afterDrain:
+#endif
         CDPumpIdle();
 
         /* Log what the ORIGINAL driver answers for AudioStatus and ReadQ, once each.
@@ -468,10 +474,10 @@ int main(void)
      * builds carried the same version string and the log could not tell them apart.
      * A version string is a promise a human has to keep; these values are the build.
      * They cannot drift, and every run is now self-identifying. */
-    CDLogf("  build config: CD_RING_MODE=%d  ringEntries=%d  faceless=%d  "
-           "structBytes=%ld",
-           (int)CD_RING_MODE, (int)kEngineReqRingEntries, (int)CD_FACELESS,
-           (long)sizeof(CDEnginePublic));
+    CDLogf("  build config: CD_RING_MODE=%d  ringEntries=%d  ringSeparate=%d  "
+           "faceless=%d  structBytes=%ld",
+           (int)CD_RING_MODE, (int)kEngineReqRingEntries, (int)CD_RING_SEPARATE,
+           (int)CD_FACELESS, (long)sizeof(CDEnginePublic));
 
 #if CD_FACELESS
     CDLogBanner(kVersionString " - Red Book CD audio for legacy Mac CD games",
