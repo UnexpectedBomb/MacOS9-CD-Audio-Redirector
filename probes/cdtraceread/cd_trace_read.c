@@ -44,7 +44,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"
 
-#define kVersionString  "CDTraceRead v3"
+#define kVersionString  "CDTraceRead v4"
 
 /* noQueueBit is bit 9 of the trap word. An immediate call ends in RTS; a queued one
  * must end at jIODone. */

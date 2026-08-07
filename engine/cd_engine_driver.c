@@ -224,8 +224,19 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
 #else
 #define kRingUsable 1
 #endif
+    /* Set when we post a request the PUMP will actually act on, so the chain-return
+     * below knows whether we are entitled to overrule a refusal. */
+    Boolean weWillService = false;
+
     if (pb != NULL && gPub != NULL && gPub->patched && kRingUsable) {
         short cs = ((CntrlParam *)pb)->csCode;
+
+        /* Only the four the pump's switch handles. AudioScan and AudioControl are
+         * posted for the trace but the pump does nothing with them, so a refusal of
+         * those is not ours to overrule. */
+        if (cs == kcsAudioPlay || cs == kcsAudioTrackSearch ||
+            cs == kcsAudioPause || cs == kcsAudioStop)
+            weWillService = true;
 
         if (cs == kcsAudioPlay || cs == kcsAudioTrackSearch ||
             cs == kcsAudioPause || cs == kcsAudioStop ||
@@ -256,7 +267,31 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
     }
 
     if (gOrigCtl == NULL) return controlErr;
-    return gOrigCtl(pb, dce);
+
+    /* ★ CHAIN, THEN CORRECT THE ANSWER — but only where we have standing to.
+     *
+     * Four conditions, all required, because a wrong "yes" here is silence with no
+     * error anywhere, which is worse than the refusal it replaces:
+     *
+     *   1. we posted a request the pump ACTS on (not merely traces);
+     *   2. a pump is ALIVE to act on it — with none running the request goes
+     *      unserviced and the caller deserves to hear that;
+     *   3. the original actually refused;
+     *   4. it refused with one of the two codes that mean "I dislike this request"
+     *      rather than "there is no disc" — see kEngineOverrideThisErr.
+     *
+     * Interrupt-safe: a comparison and one increment, no different from the stores
+     * above. */
+    {
+        OSErr err = gOrigCtl(pb, dce);
+
+        if (weWillService && gPub != NULL && gPub->pumpAlive &&
+            err != noErr && kEngineOverrideThisErr(err)) {
+            gPub->errOverrides++;
+            err = noErr;
+        }
+        return err;
+    }
 }
 
 /* ---- passive driver discovery --------------------------------------------- *

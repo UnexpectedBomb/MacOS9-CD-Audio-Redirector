@@ -43,8 +43,33 @@
 #define kEngineMagic    FOUR_CHAR_CODE('CDE1')
 /* 1 = single-slot request mailbox. 2 = the 16-entry request ring, which moved every
  * field after it in CDEnginePublic. 3 = pump liveness fields appended (pumpBeat and
- * the logger diagnostics). Readers must check before trusting the layout. */
-#define kEngineVersion  3
+ * the logger diagnostics). 4 = the error-override counters. Readers must check before
+ * trusting the layout. */
+#define kEngineVersion  4
+
+/* ★ WHICH refusals we are entitled to overrule, and why it is only these two.
+ *
+ * With the redirector installed the original driver's return code no longer says
+ * whether audio will play: the handler posts the request to the pump BEFORE it chains,
+ * so the pump has already accepted the work. Hardware showed them disagreeing —
+ * `.AppleCD` returns paramErr for a MID-TRACK AudioPlay while the pump resolves it
+ * correctly and plays. A game that checks that error could disable its music while the
+ * redirector is working perfectly, which is the ship gate's failure in a new costume.
+ *
+ * So we correct the answer, but only for refusals that mean "I do not like this
+ * request" — never for ones that mean "there is no disc":
+ *
+ *   paramErr   (-50)  the address was not to the driver's taste. We resolve addresses
+ *                     ourselves from the TOC, so ours is the opinion that matters.
+ *   controlErr (-17)  the csCode is unimplemented. This is FEASIBILITY's H2 case, and
+ *                     on a drive that rejects the audio calls outright, overruling it
+ *                     is the whole difference between silence and music.
+ *
+ * Deliberately NOT overridden: offLinErr, nsDrvErr, ioErr and friends. Those mean the
+ * tray is empty or the hardware is unhappy, the pump will not be able to play either,
+ * and claiming success would convert an honest error into silence — the exact trade
+ * this project has refused to make everywhere else. */
+#define kEngineOverrideThisErr(e)   ((e) == paramErr || (e) == controlErr)
 
 /* ★ DO NOT HAND-COUNT OFFSETS INTO A ROUTINE DESCRIPTOR. Use MixedMode.h's real
  * `RoutineDescriptor` / `RoutineRecord` structs.
@@ -381,6 +406,17 @@ typedef struct {
     volatile long   sysFreeAtInit;   /* FreeMemSys() after our allocations       */
     volatile long   sysLargestAtInit;/* MaxMemSys() - the biggest single block    */
     volatile long   pubBlockBytes;   /* sizeof(CDEnginePublic), as the ENGINE saw it */
+
+    /* ★ The error-override bookkeeping. See kEngineOverrideThisErr below.
+     *
+     * `errOverrides` counts the times we told the caller noErr after the original
+     * driver had said no. `playResolveFails` counts the times the pump then could NOT
+     * service a play it had accepted — which is the case where the override turned a
+     * visible refusal into silence, and the one thing this change must never do
+     * quietly. If the second number is ever non-zero, the override is lying and the
+     * log says so. */
+    volatile long   errOverrides;
+    volatile long   playResolveFails;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

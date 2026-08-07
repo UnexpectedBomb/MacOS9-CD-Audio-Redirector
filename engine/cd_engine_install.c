@@ -325,6 +325,16 @@ afterDrain:
                pub->synthStatusCount, pub->synthReadQCount);
         CDLogf("  requests: %ld posted, %ld serviced, %ld dropped",
                pub->reqWrite, pub->reqRead, pub->reqDropped);
+        CDLogf("  error overrides: %ld (refusals we answered noErr because the pump "
+               "took the request)", pub->errOverrides);
+        if (pub->playResolveFails > 0)
+            CDLogf("  !! %ld play(s) were accepted and then could NOT be resolved. "
+                   "That is silence the caller was told nothing about — the override "
+                   "is lying and this must be fixed before shipping.",
+                   pub->playResolveFails);
+        else if (pub->errOverrides > 0)
+            CDLogf("  ⇒ every overridden refusal was actually played. The override is "
+                   "telling the truth.");
         if (pub->reqDropped > 0)
             CDLogf("  ⇒ %ld request(s) were LOST. Any missing music is explained by "
                    "this; the ring needs to be bigger or the pump needs more time.",
@@ -342,10 +352,10 @@ afterDrain:
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v7"
+#define kVersionString  "CD Audio Redirector v8"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v11"
+#define kVersionString  "CDPump v12"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')

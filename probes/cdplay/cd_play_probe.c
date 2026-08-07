@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v8"
+#define kVersionString  "CDPlayProbe v9"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -826,6 +826,12 @@ int main(void)
                        pub->pumpUnderruns);
                 CDLogf("  requests: %ld posted, %ld serviced, %ld DROPPED",
                        pub->reqWrite, pub->reqRead, pub->reqDropped);
+                CDLogf("  error overrides: %ld   unresolvable plays: %ld",
+                       pub->errOverrides, pub->playResolveFails);
+                if (pub->playResolveFails > 0)
+                    CDLogf("  !! an accepted play could not be resolved — the caller "
+                           "was told noErr and got silence. This is the failure the "
+                           "override must never produce.");
                 if (pub->reqDropped > 0)
                     CDLogf("  !! dropped requests mean the pump missed calls this probe "
                            "made - treat any silence below as explained by that.");

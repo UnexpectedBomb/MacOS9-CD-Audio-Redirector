@@ -12,7 +12,7 @@ project(CDEngine C)
 # Two products:
 #   cd_engine.pef      the resident engine, shaped as a native driver so
 #                      GetDriverMemoryFragment accepts it
-#   CDPump_v11 a PPC app that embeds that PEF, holds its closure, and calls
+#   CDPump_v12 a PPC app that embeds that PEF, holds its closure, and calls
 #                      its DoDriverIO to validate
 #
 # The 68K generation (patch/) is retired: a 68K DRVR shell plus tail jump worked on the
@@ -48,7 +48,7 @@ add_custom_command(OUTPUT engine_pef.r
     DEPENDS cd_engine.pef ${CMAKE_CURRENT_SOURCE_DIR}/embed-pef.sh)
 
 # --- the installer app ---
-add_application(CDPump_v11
+add_application(CDPump_v12
     cd_engine_install.c
     cd_pump_audio.c
     ../probes/common/cd_probe_common.c
@@ -56,42 +56,42 @@ add_application(CDPump_v11
     ${CMAKE_CURRENT_BINARY_DIR}/engine_pef.r
     TYPE     "APPL"
     CREATOR  "CDei")
-target_include_directories(CDPump_v11 PRIVATE
+target_include_directories(CDPump_v12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../probes/common)
 # DriverLoaderLib supplies GetDriverMemoryFragment / SetDriverClosureMemory.
-target_link_libraries(CDPump_v11 DriverLoaderLib InterfaceLib)
+target_link_libraries(CDPump_v12 DriverLoaderLib InterfaceLib)
 
 if(TARGET retrocrt)
     add_dependencies(cd_engine retrocrt)
-    add_dependencies(CDPump_v11 retrocrt)
+    add_dependencies(CDPump_v12 retrocrt)
 endif()
 
 set(WRAP_APM $ENV{HOME}/Developer/claude-os9/client/scripts/wrap-apm.py)
 add_custom_command(
-    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v11.img
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v12.img
     COMMAND /usr/bin/env python3 ${WRAP_APM}
-            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v11.dsk
-            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v11.img
-            CDPump_v11
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v11.dsk ${WRAP_APM}
-    COMMENT "Wrapping CDPump_v11.dsk -> .img" VERBATIM)
-add_custom_target(CDPump_v11_disk ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v11.img)
-add_dependencies(CDPump_v11_disk CDPump_v11_APPL)
+            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v12.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v12.img
+            CDPump_v12
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v12.dsk ${WRAP_APM}
+    COMMENT "Wrapping CDPump_v12.dsk -> .img" VERBATIM)
+add_custom_target(CDPump_v12_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPump_v12.img)
+add_dependencies(CDPump_v12_disk CDPump_v12_APPL)
 
-add_custom_command(TARGET CDPump_v11_disk POST_BUILD
+add_custom_command(TARGET CDPump_v12_disk POST_BUILD
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR} CDPump_v11
-    COMMENT "Pushing CDPump_v11 to pi3.local" VERBATIM)
+            ${CMAKE_CURRENT_BINARY_DIR} CDPump_v12
+    COMMENT "Pushing CDPump_v12 to pi3.local" VERBATIM)
 
 # --- the SHIPPING artifact: the same code, faceless ---------------------------
 #
 # Same sources, same PEF, CD_FACELESS=1 and a different SIZE resource. Built from one
 # source tree on purpose: the thing that ships has to be the thing that was tested, and
 # a parallel copy of an installer is exactly how the two drift apart.
-add_application(CDAudioRedirector_v7
+add_application(CDAudioRedirector_v8
     cd_engine_install.c
     cd_pump_audio.c
     ../probes/common/cd_probe_common.c
@@ -99,38 +99,38 @@ add_application(CDAudioRedirector_v7
     ${CMAKE_CURRENT_BINARY_DIR}/engine_pef.r
     TYPE     "APPL"
     CREATOR  "CDar")
-target_compile_definitions(CDAudioRedirector_v7 PRIVATE CD_FACELESS=1)
-target_include_directories(CDAudioRedirector_v7 PRIVATE
+target_compile_definitions(CDAudioRedirector_v8 PRIVATE CD_FACELESS=1)
+target_include_directories(CDAudioRedirector_v8 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../probes/common)
-target_link_libraries(CDAudioRedirector_v7 DriverLoaderLib InterfaceLib)
+target_link_libraries(CDAudioRedirector_v8 DriverLoaderLib InterfaceLib)
 if(TARGET retrocrt)
-    add_dependencies(CDAudioRedirector_v7 retrocrt)
+    add_dependencies(CDAudioRedirector_v8 retrocrt)
 endif()
 
 add_custom_command(
-    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v7.img
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v8.img
     # Fail the build if the faceless flag word is not exactly 0x14C0. A Rez 'SIZE'
     # resource is sixteen anonymous booleans; getting one out of order is silent.
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-size-flags.sh
-            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v7.bin 14C0
+            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v8.bin 14C0
     COMMAND /usr/bin/env python3 ${WRAP_APM}
-            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v7.dsk
-            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v7.img
-            CDAudioRedirector_v7
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v7.dsk ${WRAP_APM}
+            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v8.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v8.img
+            CDAudioRedirector_v8
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v8.dsk ${WRAP_APM}
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-size-flags.sh
-    COMMENT "Checking SIZE flags, then wrapping CDAudioRedirector_v7.dsk -> .img"
+    COMMENT "Checking SIZE flags, then wrapping CDAudioRedirector_v8.dsk -> .img"
     VERBATIM)
-add_custom_target(CDAudioRedirector_v7_disk ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v7.img)
-add_dependencies(CDAudioRedirector_v7_disk CDAudioRedirector_v7_APPL)
+add_custom_target(CDAudioRedirector_v8_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_v8.img)
+add_dependencies(CDAudioRedirector_v8_disk CDAudioRedirector_v8_APPL)
 
-add_custom_command(TARGET CDAudioRedirector_v7_disk POST_BUILD
+add_custom_command(TARGET CDAudioRedirector_v8_disk POST_BUILD
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_v7
-    COMMENT "Pushing CDAudioRedirector_v7 to pi3.local" VERBATIM)
+            ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_v8
+    COMMENT "Pushing CDAudioRedirector_v8 to pi3.local" VERBATIM)
 
 # --- bisectB: the good behaviour, on a SMALL allocation ----------------------
 #

@@ -454,7 +454,16 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     EnsureTOC();
 
     if (!DecodePos(csParam, &a, &b)) {
+        /* ★ Count it, loudly. The handler may have told the caller noErr on the
+         * strength of us accepting this request, so a failure here is the one case
+         * where the override turned a visible refusal into silence. If this counter
+         * is ever non-zero the override is lying and every log says so. */
+        if (gPub != NULL) gPub->playResolveFails++;
         CDLogf("  pump: could not resolve the requested position");
+        CDLogf("  !! the caller may have been told noErr on the strength of this "
+               "request. %ld unresolvable play(s) so far — that is silence with no "
+               "error, and it must not stay above zero.",
+               gPub != NULL ? gPub->playResolveFails : -1L);
         return paramErr;
     }
     CDLogf("  pump: play LBA %ld .. %ld (%ld sectors, %ld s)",

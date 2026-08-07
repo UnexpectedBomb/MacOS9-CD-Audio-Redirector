@@ -2658,3 +2658,65 @@ so track end never arrives. It now arrives, on time, at the right frame.
 3. **The freeze mechanism** — mitigated by keeping the block at v1's proven size, never
    explained. If this misbehaves on another machine, start there.
 4. **A third-party README and the handoff.**
+
+# 2026-08-07k: settling the paramErr question — a narrow, counted override
+
+The open question from 2026-08-07i: with the redirector installed, the driver's return code no
+longer says whether audio will play, and hardware showed the two disagreeing — `.AppleCD`
+returns `paramErr` for a mid-track `AudioPlay` while the pump resolves it correctly and plays.
+A game that checks that error could disable its music while the redirector works perfectly.
+
+## What was NOT done: blanket success
+
+The tempting version is "if we accepted it, say yes". That would convert an honest *"there is
+no disc"* into silence with no error anywhere — the failure this project has refused to make
+everywhere else, and precisely what the ship gate forbids. So the override is fenced by four
+conditions, all required:
+
+1. we posted a request the pump **acts on** — `AudioPlay`, `AudioTrackSearch`, `AudioPause`,
+   `AudioStop`. `AudioScan` and `AudioControl` are traced but not serviced, so a refusal of
+   those is not ours to overrule;
+2. a pump is **alive** to act on it. With none running the request goes unserviced and the
+   caller deserves to hear that;
+3. the original actually **refused**;
+4. it refused with one of exactly **two** codes:
+
+| code | meaning | overridden? |
+|---|---|---|
+| `paramErr` (−50) | "I dislike this address" — we resolve addresses from the TOC ourselves, so ours is the opinion that matters | **yes** |
+| `controlErr` (−17) | "this csCode is unimplemented" — FEASIBILITY's H2 case. On a drive that rejects the audio calls outright this is the whole difference between silence and music | **yes** |
+| `offLinErr` (−65), `nsDrvErr`, `ioErr`, … | "there is no disc" / the hardware is unhappy — the pump cannot play either | **no** |
+
+## And it is counted, because a wrong "yes" must not be silent
+
+Two new published counters:
+
+- **`errOverrides`** — refusals we answered `noErr` because the pump took the request.
+- **`playResolveFails`** — plays the pump **accepted and then could not resolve**. This is the
+  one case where the override converts a visible refusal into silence, and it is the thing
+  this change must never do quietly.
+
+Both the pump's log and the probe report them. If `playResolveFails` is ever non-zero the logs
+say, in those words, that the override is lying and must be fixed before shipping. If
+`errOverrides > 0` and `playResolveFails == 0`, the pump states that every overridden refusal
+was actually played.
+
+## Cost
+
+`CDEnginePublic` goes from 152 to **160 bytes** — two more longs. Still far below the 468 that
+froze the machine and below the 188 that tested clean, so the size mitigation is untouched.
+Engine block version **4**; readers rebuilt (`CDPlayProbe_v9`, `CDTraceRead_v4`) and older ones
+refuse rather than misreport.
+
+Artifacts: **`CDAudioRedirector_v8`**, `CDPump_v12`, `CDPlayProbe_v9`, `CDTraceRead_v4`.
+
+## What the next run must show
+
+Phase C already produces a real `paramErr` every time, so this tests itself:
+
+- `error overrides: 3` (one per run) with **`unresolvable plays: 0`**;
+- phase C's `AudioPlay err=` now reads **0** instead of −50, while the pump still plays and
+  still completes on the boundary with `0x13`;
+- phases A and B unchanged — they were never refused, so nothing should be overridden there.
+
+If `unresolvable plays` is anything but 0, this change is wrong and comes straight back out.
