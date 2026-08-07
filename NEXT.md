@@ -59,19 +59,24 @@ binary announces itself rather than misreporting. The matching set:
 
 | Artifact | What it is |
 |---|---|
-| **`CDAudioRedirector_v5`** | Faceless build, full request ring. ⚠ **FREEZES the machine** — not a shipping candidate, see the open bug below |
-| **`CDAudioRedirector_bisectA`** | ⚠ **Diagnostic only.** v4's memory layout, v1's behaviour. Deliberately reinstates the request-drop bug to answer one question |
-| **`CDPump_v9`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v5`** | Stands in for a game, and reports the pump's published state once per poll |
+| **`CDAudioRedirector_v7`** | ★ **The current build.** Faceless, 16 request slots, ring in its own allocation (block 152 B). No freeze, nothing dropped |
+| **`CDPump_v11`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
+| **`CDPlayProbe_v6`** | Stands in for a game; reports the pump's published state under every poll. Unit-table sweep is now **opt-in** (option), and it refuses to run with no disc |
 | **`CDTraceRead_v3`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
 | `CDAudioSpike_v1` | The standalone Phase-1 DAE → Sound Manager spike |
+| `CDAudioRedirector_bisectB` / `bisectC` | Inline-ring data points, 2 and 4 slots. Diagnostics that established the size threshold, **not** candidates — bisectB drops a request every run |
 | **`CDAudioRedirector_v1` + `CDPlayProbe_v3`** | ★ **The known-good control pair.** 4 runs, 0 freezes. Keep both on the share — this pair is what every regression gets measured against |
 
-⚠ Everything between v1 and v5 (`CDAudioRedirector_v2/v3/v4`, `CDPump_v4`–`v8`,
-`CDPlayProbe_v4`, `CDTraceRead_v1/v2`) is superseded. The old readers refuse on the version
-check; delete them from the share so the right file is the obvious one to pick.
+⚠ Everything else is superseded: `CDAudioRedirector_v2`–`v6` and `bisectA/bisectD`,
+`CDPump_v4`–`v10`, `CDPlayProbe_v4/v5`, `CDTraceRead_v1/v2`. Readers built against an older
+engine version refuse rather than misreport, but delete them from the share anyway so the
+right file is the obvious one to pick.
+
+**How to tell what you actually ran:** every build now logs its own configuration from the
+compiled constants. The current one says
+`build config: CD_RING_MODE=1  ringEntries=16  ringSeparate=1  faceless=1  structBytes=152`.
 
 ## How to run it
 
@@ -186,24 +191,17 @@ recorded zero underruns. A full-screen game may be greedier. The underrun counte
 is the measurement; if it climbs, the dials are a bigger ring first, then larger reads per
 refill.
 
-### 1b. ✅ The request ring — DONE, awaiting hardware
-The single-slot mailbox dropped requests: numbers skipped in every run (`1, 4, 5, 6, 7` in
-the faceless run). `PumpLoop` read whatever was in the slot and set `lastSeq = seq`, stepping
-over anything that had arrived in between. Harmless only by ordering luck — the losses were
-`AudioControl` and `AudioTrackSearch`-with-hold, which the pump ignores — but nothing
-protected an `AudioPlay`, and `AudioStop` then `AudioPlay` is how a game restarts a loop.
+### 1b. ✅ The request ring — DONE, and the freeze it caused is SOLVED
+The single-slot mailbox dropped requests whenever two arrived inside one pump pass. Replacing
+it with a 16-entry ring fixed that and froze the machine, 4 runs out of 4 — and a long bisect
+showed the cause was neither the ring's behaviour nor the pump but the **size of the published
+block**: 468 bytes inline froze, 152 bytes with the ring separately allocated does not, at the
+same total system-heap cost. `CD_RING_SEPARATE` is now the default. Full account in FINDINGS
+2026-08-07c/d/e/g.
 
-Now a **16-entry ring**, single-producer / single-consumer, monotonic never-wrapped indices
-so `reqWrite - reqRead` is the exact backlog. The handler still only does plain stores and
-publishes `reqWrite` last, so it stays safe at any interrupt level. The pump drains every
-pending entry per pass and calls `CDPumpIdle()` between them so a burst cannot starve the
-audio. Overflow is detected, counted in `reqDropped`, and reported by the pump, the probe and
-the trace reader — the one thing it must never be again is silent.
-
-⚠ **`CDEnginePublic` version is now 2** and every field after the mailbox moved. All three
-readers check `version` and refuse rather than print nonsense. `CDPlayProbe` no longer
-hand-rolls a copy of the struct — it includes `cd_engine.h`, so the compiler keeps them in
-step. That hand-rolled copy was a live trap: it would have read the wrong offsets silently.
+⚠ **The mechanism is still unknown.** The mitigation is that the block is back to v1's proven
+size, not that we understand what a 468-byte allocation does to this machine. If this ever
+misbehaves elsewhere, start there.
 
 ### 2. Multi-track and looping behaviour
 **Repeat play is DONE and PASSED** (2026-08-06b, three plays against one live pump: cursor
