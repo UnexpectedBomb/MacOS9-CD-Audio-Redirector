@@ -1954,3 +1954,74 @@ One line per poll, in the probe's log, four times a second. When it next wedges:
 Engine version is now **3** (the block grew), so the matching set is `CDAudioRedirector_v4`,
 `CDPump_v8`, `CDPlayProbe_v5`, `CDTraceRead_v3`. Older readers will refuse rather than
 misreport, which is the guard doing its job.
+
+# Run 2026-08-07: the instrumentation worked, and it exonerates the ring
+
+`CDAudioRedirector_v4` + `CDPlayProbe_v5`. Froze again, at poll 28. Logs in
+`logs/2026-08-07-v4-published-beat/`.
+
+This time the measurement went down a channel that worked, and it answered every question the
+last three runs could not.
+
+## The pump was perfectly healthy at the moment the machine died
+
+The last pump-state line the probe wrote, one poll before the freeze:
+
+```
+pump: beat=74262 reqSeen=3 state=1 absF=675 | reqR=3 reqW=3 drop=0 | under=0
+      | quiet=0 logErr=0 logWrites=118
+```
+
+Every field is what it should be:
+
+- **`beat` climbing** — 74219 → 74262 across the run. The pump was still being scheduled at
+  the last measurement. It did not wedge.
+- **`reqR=3 reqW=3 drop=0 reqSeen=3`** — the ring drained all three requests, then sat idle
+  and consistent for the remaining seven seconds. **It is not doing anything when the machine
+  freezes.**
+- **`state=1 absF=675`** = LBA 525 = **7.00 s of audio delivered, 0 underruns.**
+- **`quiet=0 logErr=0`** — both of my suspects from the v3 run are dead. The quiet counter was
+  never stuck and `FSWrite` never failed.
+
+The pump's own log confirms it independently: six heartbeats, one per second,
+`86KB → 1033KB delivered, underruns=0, reqR=3 reqW=3 drop=0`.
+
+**(The v3 run's totally empty pump log therefore remains unexplained.** `logWrites` proves the
+same code logs fine here. It is no longer load-bearing, but it was never accounted for.)
+
+## ⚠ I was too confident about the v1 control. The freeze point moves.
+
+| build | polls completed | time | outcome |
+|---|---|---|---|
+| v2 (ring) | 6 | 1.50 s | froze |
+| v3 (ring + log heartbeat) | 13 | 3.25 s | froze |
+| v4 (ring + published heartbeat) | 28 | 7.00 s | froze |
+| **v1 (control)** | 40 | 10.00 s | completed |
+
+The onset varies by more than **4×** between builds that are supposed to fail the same way.
+That is the signature of an intermittent fault, not a deterministic one — and against a
+failure whose onset ranges from 1.5 s to beyond 7 s, **a single clean 10-second v1 run is not
+evidence that v1 is immune.** It is one sample that happened to survive.
+
+So two earlier conclusions were over-claimed on n=1 each, and I am withdrawing both:
+
+- **"The ring is implicated."** The instrumentation now shows the ring idle, consistent and
+  correct at the freeze. Nothing about it is executing.
+- **"The USB 2.0 stack is exonerated."** That rested on the same single control run.
+
+What is actually established is narrower: **the freeze happens during CD-DA streaming, is
+intermittent, and is not caused by the pump, the ring, the logger or the drain loop** — all
+four were measured healthy at the last sample before the machine stopped.
+
+## Next: the control, properly powered
+
+One boot, `CDAudioRedirector_v1` + `CDPlayProbe_v3`, and run the probe **three times** against
+the one pump. Three 10-second plays instead of one.
+
+- **Any run freezes** ⇒ v1 is not immune, the ring is fully exonerated, and this is a
+  pre-existing fault that has been there all along — the thing to chase is CD-DA streaming
+  itself, not this month's changes.
+- **All three complete** ⇒ v1 really does look different, and the difference has to be
+  something other than the ring, since the ring is provably idle when v4 dies.
+
+Either way it costs one reboot and removes the guesswork that three builds have not.
