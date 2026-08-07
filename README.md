@@ -42,17 +42,19 @@ truthful advancing position, on a G4 Mac mini with no analog CD-audio path — v
 repeatedly, with the position numbers checking out to the exact CD frame. Faceless
 Startup-Items packaging works unattended from a cold boot with an empty tray.
 
-**But there is currently no build that is both reliable and safe:**
-
-| build | plays reliably | stable |
-|---|---|---|
-| single-slot request mailbox | ✗ can silently lose an `AudioPlay` | ✓ 4 runs, 0 freezes |
-| 16-entry request ring | ✓ no requests lost | ✗ freezes the machine, 3 runs, 3 freezes |
+A long freeze investigation is now resolved. The request ring lives in its own system-heap
+allocation, which keeps the published block at 152 bytes; at 468 bytes the same machine froze
+during playback, four runs out of four, for reasons still not understood. The current build
+runs clean with all sixteen request slots and nothing dropped.
 
 The governing rule for this project is that **the music must start every time it is supposed
 to.** An extension that usually starts the music has not fixed the problem — it has reproduced
-it, since the symptom being fixed *is* silence. So neither build qualifies, and the open freeze
-is the remaining work.
+it, since the symptom being fixed *is* silence. By that standard this is not finished:
+
+- a second `AudioPlay` for a **different track** has never been run;
+- **natural end of track** has never executed on hardware;
+- no **mixed-mode disc** (data track 1) has been tried;
+- and three ten-second plays are not evidence of "every time".
 
 `NEXT.md` is the current state and the next step. `FINDINGS.md` is the evidence, run by run,
 including the failures and the conclusions that were later withdrawn.

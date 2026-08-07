@@ -34,17 +34,23 @@ window; it does not close it. Three requests inside one pump pass would still lo
 only a candidate if it can be shown to make the loss impossible for the call patterns a real
 game issues, or if it carries a counter that makes any loss visible.
 
-## The mechanism works. The build does not yet.
+## Where this stands
 
 On the G4 mini, with a pressed audio CD: a legacy `AudioPlay` — the call a mixed-mode game
 issues — produces **audible music**, plus a truthful advancing position, on a machine with no
 analog CD-audio path. Verified end to end many times, with the numbers checking out to the
 frame. Faceless Startup-Items packaging works, unattended, from a cold boot with an empty tray.
 
-⚠ **But there is no build that both plays reliably and does not freeze the machine.** The
-request ring fixes the dropped-request hole and freezes the Mac (3 runs, 3 freezes); the
-single-slot build is rock solid (4 runs, 0 freezes) and can silently lose an `AudioPlay`.
-Against the ship gate above, neither is finishable. The open bug below is the whole job now.
+✅ **The freeze is solved.** `CDAudioRedirector_v7` runs clean and drops nothing: 16 request
+slots with the ring in its own system-heap allocation, so the published block stays at 152
+bytes — essentially v1's 148, the size profile with the most hardware behind it. Three runs,
+120 polls, 18 of 18 requests serviced, 0 dropped.
+
+⚠ **It is still not finishable**, because the ship gate says *every time* and what has been
+shown is three ten-second plays of track 1. A track **switch** has never run, natural
+end-of-track has never executed, no mixed-mode disc has been tried, and the freeze's mechanism
+is still unexplained (see FINDINGS 2026-08-07g — the mitigation is real, the explanation is
+not). Those four things are the remaining work.
 
 ## Current artifacts (staged on the Pi at `/home/csell/shared/`)
 
@@ -69,9 +75,9 @@ check; delete them from the share so the right file is the obvious one to pick.
 
 ## How to run it
 
-⚠ **There is currently no shippable build.** The full-ring builds freeze the machine and the
-v1 build drops requests, which the ship gate above rules out. What follows is how to run the
-diagnostics.
+**`CDAudioRedirector_v7` is the build to run.** It meets the ship gate's two mechanical
+requirements — it does not freeze and it drops nothing — but it is not validated for release;
+see the remaining work below.
 
 **Always, before any run:** delete `CD Audio Redirector Log` and `CD Play Probe Log` first.
 A run that appends to an old log has put the interesting session in the *middle* of the file,
@@ -82,14 +88,18 @@ and "read from the last banner" has already pointed at the wrong session once.
 1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
    drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v5`**. Expect music, `the CD Audio Redirector IS resident`, and a
+3. Run **`CDPlayProbe_v6`**. Expect music, `the CD Audio Redirector IS resident`, and a
    `pump: beat=… reqR=… reqW=…` line under every poll.
 4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
    relied on as the only channel.
 
-**The diagnostic build** (`CDPump_v9`), when you want the window and manual control:
+**The diagnostic build** (`CDPump_v11`), when you want the window and manual control:
 reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
-`CDPlayProbe_v5`, then click the pump window to stop. `CDTraceRead_v3` shows the trace.
+`CDPlayProbe_v6`, then click the pump window to stop. `CDTraceRead_v3` shows the trace.
+
+⚠ **Always confirm the disc has mounted before launching the probe.** With no disc there is no
+CD in the drive queue; the probe now refuses rather than sweeping the unit table, which hung
+the machine once.
 
 Logs land in the System Folder: `CD Engine Log` (or `CD Audio Redirector Log` for a faceless
 build), `CD Play Probe Log`, `CD Trace Log`. They **append**, which is why they must be deleted
