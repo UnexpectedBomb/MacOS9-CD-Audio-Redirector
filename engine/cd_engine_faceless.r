@@ -53,11 +53,11 @@ resource 'SIZE' (-1) {
 };
 
 resource 'vers' (1, "CDAudioRedirector") {
-    0x08,
-    0x00,                   /* 8.0 */
+    0x09,
+    0x00,                   /* 9.0 */
     development,
     0x01,
     verUS,
-    "8.0d1",
-    "8.0d1, CD Audio Redirector - Red Book audio for legacy Mac CD games"
+    "9.0d1",
+    "9.0d1, CD Audio Redirector - Red Book audio for legacy Mac CD games"
 };

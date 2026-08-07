@@ -43,33 +43,40 @@
 #define kEngineMagic    FOUR_CHAR_CODE('CDE1')
 /* 1 = single-slot request mailbox. 2 = the 16-entry request ring, which moved every
  * field after it in CDEnginePublic. 3 = pump liveness fields appended (pumpBeat and
- * the logger diagnostics). 4 = the error-override counters. Readers must check before
- * trusting the layout. */
-#define kEngineVersion  4
+ * the logger diagnostics). 4 = the refusal counters. 5 = identical layout to 4, but the
+ * first counter changed MEANING — from "errors we overrode" to "refusals we merely
+ * noted" — once the override proved impossible for queued calls. A reader built for 4
+ * would report the old meaning against the new engine, so the version moves even though
+ * no field did. Readers must check. */
+#define kEngineVersion  5
 
-/* ★ WHICH refusals we are entitled to overrule, and why it is only these two.
+/* ★ WHICH refusals we NOTE — and why we no longer try to overrule them.
  *
- * With the redirector installed the original driver's return code no longer says
- * whether audio will play: the handler posts the request to the pump BEFORE it chains,
- * so the pump has already accepted the work. Hardware showed them disagreeing —
- * `.AppleCD` returns paramErr for a MID-TRACK AudioPlay while the pump resolves it
- * correctly and plays. A game that checks that error could disable its music while the
- * redirector is working perfectly, which is the ship gate's failure in a new costume.
+ * v8 attempted to answer `noErr` when the original driver refused a request the pump
+ * had already accepted. Hardware settled it on 2026-08-07: **it cannot work, because
+ * these calls arrive QUEUED.**
  *
- * So we correct the answer, but only for refusals that mean "I do not like this
- * request" — never for ones that mean "there is no disc":
+ * The evidence was unambiguous and self-contradictory in a useful way — the counter
+ * incremented three times (so our code ran, the condition matched, and the return
+ * value really was replaced) while the caller still received −50 every time. For a
+ * queued Control call the driver completes the request through jIODone, which sets
+ * `ioResult`, and the Device Manager hands the CALLER `ioResult` — not whatever the
+ * driver's entry point returned. Our chain lets the original complete the request with
+ * −50 before it ever returns to us, so by the time we could change anything the answer
+ * has already been delivered. The trace confirms the shape: AudioPlay is
+ * `ioTrap=0xA004` (queued), against `0xA204 IMMEDIATE` for accRun.
  *
- *   paramErr   (-50)  the address was not to the driver's taste. We resolve addresses
- *                     ourselves from the TOC, so ours is the opinion that matters.
- *   controlErr (-17)  the csCode is unimplemented. This is FEASIBILITY's H2 case, and
- *                     on a drive that rejects the audio calls outright, overruling it
- *                     is the whole difference between silence and music.
+ * Overriding for real would mean writing `pb->ioParam.ioResult` after the chain — that
+ * is the completion protocol this project deliberately stayed out of, it is racy for
+ * an asynchronous caller whose completion routine has already run with the refusal,
+ * and the benefit is small: the pump PLAYS either way, so the music does start. The
+ * only exposure is a game that disbelieves us, which is speculative and cannot be
+ * tested without a real game.
  *
- * Deliberately NOT overridden: offLinErr, nsDrvErr, ioErr and friends. Those mean the
- * tray is empty or the hardware is unhappy, the pump will not be able to play either,
- * and claiming success would convert an honest error into silence — the exact trade
- * this project has refused to make everywhere else. */
-#define kEngineOverrideThisErr(e)   ((e) == paramErr || (e) == controlErr)
+ * So the codes below are now only CLASSIFIED, not changed — a refusal of one of these
+ * for a request we serviced is worth counting, because it is exactly what a real
+ * game's complaint would look like from our side. */
+#define kEngineNotableRefusal(e)    ((e) == paramErr || (e) == controlErr)
 
 /* ★ DO NOT HAND-COUNT OFFSETS INTO A ROUTINE DESCRIPTOR. Use MixedMode.h's real
  * `RoutineDescriptor` / `RoutineRecord` structs.
@@ -407,15 +414,15 @@ typedef struct {
     volatile long   sysLargestAtInit;/* MaxMemSys() - the biggest single block    */
     volatile long   pubBlockBytes;   /* sizeof(CDEnginePublic), as the ENGINE saw it */
 
-    /* ★ The error-override bookkeeping. See kEngineOverrideThisErr below.
+    /* ★ Refusal bookkeeping. See kEngineNotableRefusal above for why these are only
+     * counted and no longer corrected.
      *
-     * `errOverrides` counts the times we told the caller noErr after the original
-     * driver had said no. `playResolveFails` counts the times the pump then could NOT
-     * service a play it had accepted — which is the case where the override turned a
-     * visible refusal into silence, and the one thing this change must never do
-     * quietly. If the second number is ever non-zero, the override is lying and the
-     * log says so. */
-    volatile long   errOverrides;
+     * `refusalsServiced` counts requests the pump took on that the original driver
+     * refused anyway — the caller was told no while we played. `playResolveFails`
+     * counts plays the pump accepted and then could not resolve, which is real silence
+     * and must stay at zero. Together they say whether a game being unhappy would be
+     * our fault or the driver's opinion. */
+    volatile long   refusalsServiced;
     volatile long   playResolveFails;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *

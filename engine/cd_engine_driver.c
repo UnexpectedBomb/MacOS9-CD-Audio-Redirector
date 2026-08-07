@@ -268,28 +268,27 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
 
     if (gOrigCtl == NULL) return controlErr;
 
-    /* ★ CHAIN, THEN CORRECT THE ANSWER — but only where we have standing to.
+    /* ★ CHAIN, THEN COUNT — we no longer try to correct the answer.
      *
-     * Four conditions, all required, because a wrong "yes" here is silence with no
-     * error anywhere, which is worse than the refusal it replaces:
+     * v8 replaced the return value with noErr here. It did not work, and the run that
+     * proved it is worth remembering: the counter incremented three times while the
+     * caller received -50 all three times. These calls are QUEUED, so the original
+     * completes the request through jIODone before returning to us and the Device
+     * Manager hands the caller ioResult, not our return value. Details and the
+     * decision not to touch ioResult are in kEngineNotableRefusal.
      *
-     *   1. we posted a request the pump ACTS on (not merely traces);
-     *   2. a pump is ALIVE to act on it — with none running the request goes
-     *      unserviced and the caller deserves to hear that;
-     *   3. the original actually refused;
-     *   4. it refused with one of the two codes that mean "I dislike this request"
-     *      rather than "there is no disc" — see kEngineOverrideThisErr.
+     * The counter stays, because "the driver refused something we serviced" is exactly
+     * what a real game's complaint would look like from this side, and we would rather
+     * have the number than guess.
      *
-     * Interrupt-safe: a comparison and one increment, no different from the stores
-     * above. */
+     * Interrupt-safe: a comparison and one increment. */
     {
         OSErr err = gOrigCtl(pb, dce);
 
         if (weWillService && gPub != NULL && gPub->pumpAlive &&
-            err != noErr && kEngineOverrideThisErr(err)) {
-            gPub->errOverrides++;
-            err = noErr;
-        }
+            err != noErr && kEngineNotableRefusal(err))
+            gPub->refusalsServiced++;
+
         return err;
     }
 }

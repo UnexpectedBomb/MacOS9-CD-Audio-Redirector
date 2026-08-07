@@ -2720,3 +2720,81 @@ Phase C already produces a real `paramErr` every time, so this tests itself:
 - phases A and B unchanged — they were never refused, so nothing should be overridden there.
 
 If `unresolvable plays` is anything but 0, this change is wrong and comes straight back out.
+
+# Run 2026-08-07l: the error override CANNOT WORK — these calls are queued
+
+`CDAudioRedirector_v8` + `CDPlayProbe_v9`, three runs. Logs in
+`logs/2026-08-07-override-negative/`. A clean negative result, and the evidence contradicts
+itself in exactly the way that identifies the cause.
+
+## The contradiction
+
+```
+error overrides: 1   unresolvable plays: 0     (run 1)
+error overrides: 2   unresolvable plays: 0     (run 2)
+error overrides: 3   unresolvable plays: 0     (run 3)
+```
+
+The counter incremented once per run — so our code ran, all four conditions matched, and the
+return value really was replaced with `noErr`. And yet, every run:
+
+```
+--- phase C: AudioPlay at LBA 32847 = 07:19:72 ---
+  Control csCode=104 err=-50
+  AudioPlay err=-50
+```
+
+**The caller still received −50.** Only one Control call returned an error in each run, and it
+is that one, so the override fired *on that call* and the caller saw the refusal anyway.
+
+## Why: the answer does not travel in the return value
+
+These calls arrive **queued**. From the archived trace:
+
+```
+cs=104 *AudioPlay   ioTrap=0xA004 queued
+cs=65  accRun       ioTrap=0xA204 IMMEDIATE
+```
+
+For a queued Control call the driver completes the request through **`jIODone`**, which sets
+`ioResult`, and the Device Manager hands the caller **`ioResult`** — not whatever the driver's
+entry point returned. Our chain lets the original complete the request with −50 *before* it
+returns to us, so by the time we could change anything the answer has already been delivered.
+
+This is the same queued/immediate distinction the project recorded in Phase 2a, applied to a
+place I had not thought it through: **synthesis works after the chain because the caller reads
+`csParam` afterwards; the return code does not, because the Device Manager has already
+captured it.** Rewriting csParam and rewriting the result are not the same manoeuvre, and I
+treated them as if they were.
+
+## Reverted, and what is kept
+
+`CDAudioRedirector_v9` removes the `err = noErr` — it was a line that did nothing — and keeps
+the counter, renamed **`refusalsServiced`**: requests the pump took on and played that the
+original driver refused anyway. That number is exactly what a real game's complaint would look
+like from this side, so it is worth having.
+
+Making the override actually work would mean writing `pb->ioParam.ioResult` after the chain.
+Deliberately not done:
+
+- it is the completion protocol this project chose to stay out of, and staying out of it is
+  why chaining has been safe all along;
+- it is racy for an asynchronous caller whose completion routine has already run with the
+  refusal;
+- **the benefit is small, because the music starts either way.** The pump plays regardless —
+  proven again in this very run: phase C completed on the boundary with `0x13` all three
+  times, `24/24` requests serviced, `0 DROPPED`, music audible.
+
+So against the ship gate, the music *does* start every time. The residual exposure is a game
+that disbelieves a `paramErr` and disables its own music — speculative, only reachable via a
+mid-track `AudioPlay` (track starts return `noErr`), and untestable without a real game. If
+Jubadub's disc ever shows it, `refusalsServiced` will be non-zero and we will know immediately.
+
+## Note on the next build
+
+`CDAudioRedirector_v9` is `v8` minus a line that provably had no effect, plus renamed log text.
+It does not need a hardware run of its own; fold it into whatever comes next.
+
+Engine block version **5** — the layout is identical to 4, but the first counter changed
+meaning, and a reader built for 4 would report the old one. Set: `CDAudioRedirector_v9`,
+`CDPump_v13`, `CDPlayProbe_v10`, `CDTraceRead_v5`.

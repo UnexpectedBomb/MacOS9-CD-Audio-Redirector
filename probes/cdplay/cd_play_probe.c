@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v9"
+#define kVersionString  "CDPlayProbe v10"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -586,12 +586,13 @@ static void RunProbe(void)
                  * pump: poll, and read `state` and the position. */
                 OSErr perr = PlayAtLBA(startC, "phase C");
                 if (perr != noErr) {
-                    CDLogf("  ⚠ the original driver REFUSED this address (err=%d).",
-                           perr);
-                    CDLogf("    That is its opinion, not the redirector's: our handler");
-                    CDLogf("    posts the request before chaining, so the pump has");
-                    CDLogf("    already taken it. Polling anyway — watch `state` in the");
-                    CDLogf("    pump lines below, not the error above.");
+                    CDLogf("  ⚠ the original driver REFUSED this address (err=%d), and "
+                           "that is what the caller sees.", perr);
+                    CDLogf("    We cannot correct it: these calls are QUEUED, so the");
+                    CDLogf("    answer travels in ioResult and the original has already");
+                    CDLogf("    completed the request before returning to us. The pump");
+                    CDLogf("    has taken the work regardless — watch `state` below, not");
+                    CDLogf("    the error above.");
                 }
                 (void)PollFor(12, "phase C (end of track)", true);
             }
@@ -826,12 +827,11 @@ int main(void)
                        pub->pumpUnderruns);
                 CDLogf("  requests: %ld posted, %ld serviced, %ld DROPPED",
                        pub->reqWrite, pub->reqRead, pub->reqDropped);
-                CDLogf("  error overrides: %ld   unresolvable plays: %ld",
-                       pub->errOverrides, pub->playResolveFails);
+                CDLogf("  refusals serviced: %ld   unresolvable plays: %ld",
+                       pub->refusalsServiced, pub->playResolveFails);
                 if (pub->playResolveFails > 0)
-                    CDLogf("  !! an accepted play could not be resolved — the caller "
-                           "was told noErr and got silence. This is the failure the "
-                           "override must never produce.");
+                    CDLogf("  !! an accepted play could not be resolved — real silence, "
+                           "and it must be zero.");
                 if (pub->reqDropped > 0)
                     CDLogf("  !! dropped requests mean the pump missed calls this probe "
                            "made - treat any silence below as explained by that.");
