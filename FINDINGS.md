@@ -2025,3 +2025,73 @@ the one pump. Three 10-second plays instead of one.
   something other than the ring, since the ring is provably idle when v4 dies.
 
 Either way it costs one reboot and removes the guesswork that three builds have not.
+
+# Run 2026-08-07b: the powered v1 control — three clean runs, and a surprise
+
+`CDAudioRedirector_v1` + `CDPlayProbe_v3`, one boot, probe run three times.
+**Music all three times, 120 polls, no freeze.** Logs in `logs/2026-08-07-v1-control-x3/`.
+
+The tally is now **v1: 4 runs, 0 freezes** against **v2/v3/v4: 3 runs, 3 freezes**. Under a
+Fisher exact test that is p ≈ 0.03, so the difference between v1 and the later builds is real
+and not the luck I worried it might be in the previous entry. The freeze is genuinely tied to
+the v2 change — even though the instrumentation proves the ring is idle and consistent when
+the machine dies.
+
+## ★ The surprise: v1 delivered every request, consecutively
+
+```
+--- request 0: csCode 109 ---   --- request 6: csCode 109 ---   --- request 12: csCode 109 ---
+--- request 1: csCode 103 ---   --- request 7: csCode 103 ---   --- request 13: csCode 103 ---
+--- request 2: csCode 104 ---   --- request 8: csCode 104 ---   --- request 14: csCode 104 ---
+...                             ...                             ... through request 17
+```
+
+**0 through 17 with no gaps — from the single-slot mailbox.** The earlier v1 control dropped
+0, 1 and 2. So the mailbox does not drop *always*; it drops only when two requests land inside
+one pump pass, and on this boot the pump kept up.
+
+That is worth having for two reasons. It confirms the drop is **timing-dependent** rather than
+structural, which is exactly what the original analysis claimed. And it **kills a hypothesis**:
+"delivering requests 0 and 1 to the pump is what freezes it" is now dead, because v1 delivered
+all of them here and ran clean three times.
+
+## What is left, after everything the instrumentation has eliminated
+
+Measured healthy at the last sample before a freeze: the pump (scheduled), the ring
+(drained, idle, `drop=0`), the drain loop, the logger, playback (7 s delivered, 0 underruns).
+Eliminated by this run: request delivery. Eliminated by direct computation: a layout or
+bounds error — the real PowerPC ABI numbers are `sizeof(CDEnginePublic) = 456`,
+`offsetof(reqRing) = 52`, ring spanning bytes 52..372, comfortably in bounds. And the PEF
+embedded in the app is byte-identical to the one built from source, so no stale-fragment
+mismatch.
+
+Two candidates survive, and they changed together in v2:
+
+1. **Behaviour** — the producer writes at a *variable* offset (`reqRing[w & 15]`) instead of a
+   fixed one, and the consumer drains rather than taking the newest.
+2. **Memory** — `CDEnginePublic` grew from ~148 bytes to **456**, so the engine takes a
+   three-times-larger bite out of the **system heap**: the same heap holding this machine's
+   experimental USB 2.0 EHCI driver. A different allocation size moves everything allocated
+   after it, and would explain why the fault is intermittent, why its onset varies 4×, and why
+   our own code measures healthy throughout.
+
+## `CDAudioRedirector_bisectA` separates them in one run
+
+Same struct, same 456-byte allocation, same offsets — **verified**: compiled with
+`CD_RING_MODE=0` the layout constants are still `456 / 52`, identical to the shipping build.
+Only the behaviour reverts to v1's: the producer writes a fixed slot, the consumer takes only
+the newest request, and the extra in-loop `CDPumpIdle` is gone.
+
+The resident engine is rebuilt with the same switch and embedded separately — checked, the two
+PEFs differ and each app carries the right one. A bisect whose two halves disagree measures
+nothing, and that trap has already cost this project a cycle.
+
+- **bisectA freezes** ⇒ behaviour is innocent, the **allocation size** is the trigger, and the
+  real fault lives elsewhere in the system heap. This project has been perturbing someone
+  else's bug, and the USB 2.0 stack goes back on the list.
+- **bisectA is clean** ⇒ the **behaviour** is the cause after all, and it is the
+  variable-offset write or the drain loop — neither of which reading the code has explained,
+  which is precisely why it is being measured.
+
+⚠ bisectA deliberately reinstates v1's request-dropping bug. It answers a question; it is not
+a shipping candidate.

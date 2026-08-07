@@ -226,7 +226,13 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
             const unsigned char *cp =
                 (const unsigned char *)((CntrlParam *)pb)->csParam;
             long             w = gPub->reqWrite;
+#if CD_RING_MODE
             CDEngineRequest *e = &gPub->reqRing[w & (kEngineReqRingEntries - 1)];
+#else
+            /* Bisect: v1's behaviour, v4's memory. Always slot 0, so the producer's
+             * store lands at a FIXED offset exactly as it did in v1. */
+            CDEngineRequest *e = &gPub->reqRing[0];
+#endif
             int              i;
 
             e->csCode = cs;

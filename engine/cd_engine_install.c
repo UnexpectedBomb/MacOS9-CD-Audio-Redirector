@@ -160,8 +160,17 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
                        lost, pub->reqDropped);
             }
 
+#if CD_RING_MODE
             seq = pub->reqRead;
             e   = &pub->reqRing[seq & (kEngineReqRingEntries - 1)];
+#else
+            /* Bisect: v1's behaviour on v4's memory. Take only the NEWEST request from
+             * the fixed slot and skip the rest, exactly as the single-slot mailbox did
+             * — including its drop, which is the bug we are trying to keep fixed. This
+             * build exists to answer a question, not to ship. */
+            seq = pub->reqWrite - 1;
+            e   = &pub->reqRing[0];
+#endif
             cs  = e->csCode;
             for (i = 0; i < 16; i++) param[i] = e->param[i];
 
@@ -201,10 +210,16 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
                     break;
             }
 
+#if CD_RING_MODE
             /* Keep the ring fed between requests too. A burst of queued requests can
              * take a while to work through — CDPumpPlay alone pre-rolls for a second —
-             * and the audio must not starve while we catch up. */
+             * and the audio must not starve while we catch up.
+             *
+             * Gated with the bisect switch so mode 0 restores v1's behaviour COMPLETELY
+             * — one request per pass and one CDPumpIdle per pass. A half-restored
+             * control answers half a question. */
             CDPumpIdle();
+#endif
         }
 
         CDPumpIdle();
@@ -321,10 +336,10 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v4"
+#define kVersionString  "CD Audio Redirector v5"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v8"
+#define kVersionString  "CDPump v9"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')

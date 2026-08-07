@@ -190,6 +190,36 @@ typedef struct {
  * and the alternative failure is silent. */
 #define kEngineReqRingEntries   16
 
+/* ★ BISECT SWITCH — separates the two things that changed together in v2.
+ *
+ * v1 (clean, 4 runs) and v2/v3/v4 (froze, 3 runs) differ in two ways at once, and the
+ * instrumentation has ruled out everything else: the pump, the drain loop, the logger
+ * and the ring bookkeeping were all measured healthy at the last sample before a
+ * freeze, with the ring drained and idle.
+ *
+ *   BEHAVIOUR  the consumer drains every pending request instead of only the newest,
+ *              and the producer writes at a VARIABLE offset (reqRing[w & 15]) rather
+ *              than a fixed one.
+ *   MEMORY     CDEnginePublic grew from ~148 bytes to 456, so the engine's
+ *              NewPtrSysClear takes a three-times-larger bite out of the SYSTEM heap
+ *              — the same heap that holds this machine's experimental USB 2.0 EHCI
+ *              driver. A different allocation size moves everything allocated after it.
+ *
+ * CD_RING_MODE 0 keeps the STRUCTURE exactly as it is — same size, same offsets, same
+ * allocation — while restoring v1's single-slot BEHAVIOUR. So:
+ *
+ *   0 freezes  ⇒ the behaviour is innocent and the ALLOCATION SIZE is the trigger,
+ *                which means the real fault is somewhere else in the system heap and
+ *                this project has merely been perturbing it;
+ *   0 is clean ⇒ the behaviour is the cause after all, and it is the producer's
+ *                variable-offset write or the drain loop, not the memory layout.
+ *
+ * Either answer is worth the reboot; neither is reachable by reading the code, which
+ * three builds have now demonstrated. */
+#ifndef CD_RING_MODE
+#define CD_RING_MODE 1
+#endif
+
 typedef struct {
     OSType          magic;          /* kEngineMagic                             */
     /* ★ 2 = the request ring replaced the single-slot mailbox, which moved every
