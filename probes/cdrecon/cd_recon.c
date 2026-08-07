@@ -199,7 +199,7 @@ static void SurveyVolumes(void)
                index, cname, hpb.volumeParam.ioVRefNum,
                hpb.volumeParam.ioVDrvInfo, hpb.volumeParam.ioVDRefNum,
                (unsigned short)hpb.volumeParam.ioVSigWord,
-               hpb.volumeParam.ioVFSID, hpb.volumeParam.ioVNmFls);
+               hpb.volumeParam.ioVFSID, (long)hpb.volumeParam.ioVNmFls);
 
         if (hpb.volumeParam.ioVDRefNum != gR.cd.refNum) continue;
 

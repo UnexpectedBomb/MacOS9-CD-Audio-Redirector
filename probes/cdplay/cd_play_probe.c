@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v6"
+#define kVersionString  "CDPlayProbe v7"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -187,16 +187,61 @@ static void LogPumpState(void)
     }
 }
 
-static void PollPosition(void)
+/* LBA -> absolute MSF, the inverse of CDMSFToLBA. Absolute frame numbering starts
+ * 150 frames (2 s) before LBA 0, which is the lead-in. */
+static void LBAToMSF(long lba, int *m, int *s, int *f)
+{
+    long absF = lba + kCDDALeadInSectors;
+    if (absF < 0) absF = 0;
+    *m = (int)(absF / (75L * 60L));
+    *s = (int)((absF / 75L) % 60L);
+    *f = (int)(absF % 75L);
+}
+
+/* Issue AudioPlay at an arbitrary LBA, using the position encoding phase A already
+ * discovered rather than rediscovering it. Used by the track-switch and
+ * end-of-track phases, which need to start playback somewhere specific. */
+static OSErr PlayAtLBA(long lba, const char *label)
+{
+    short          param[11];
+    unsigned char *b = (unsigned char *)param;
+    int            m, s, f;
+    OSErr          err;
+
+    LBAToMSF(lba, &m, &s, &f);
+    memset(param, 0, sizeof(param));
+    b[0] = (unsigned char)(gP.playPosType >= 0 ? gP.playPosType : 0);
+    b[2] = kBinToBCD(m);
+    b[3] = kBinToBCD(s);
+    b[4] = kBinToBCD(f);
+    b[6] = 0;                        /* play, do not merely position */
+    b[9] = 0;                        /* stereo */
+
+    CDLogf("--- %s: AudioPlay at LBA %ld = %02d:%02d:%02d ---", label, lba, m, s, f);
+    err = CDControlCall(gP.cd.refNum, kcsAudioPlay, param, sizeof(param), NULL, 0);
+    CDLogf("  AudioPlay err=%d", err);
+    return err;
+}
+
+/* Poll AudioStatus and ReadQ repeatedly and dump the raw bytes each time.
+ *
+ * `watchCompletion` is for the end-of-track phase: it additionally watches for the
+ * synthesised status byte reaching 0x13 (completed) and for the position ceasing to
+ * advance, which together are what a game polling for the end of a track has to see.
+ *
+ * Returns the number of polls in which the reported absolute position was unchanged
+ * from the previous one — the "held" count. */
+static int PollFor(int seconds, const char *label, Boolean watchCompletion)
 {
     int   i;
-    const int polls = (kPollSeconds * 60) / kPollTicks;
+    const int polls = (seconds * 60) / kPollTicks;
     short first[11], last[11];
     Boolean haveFirst = false;
+    long  prevAbs = -1;
+    int   heldCount = 0;
+    Boolean sawCompleted = false;
 
-    CDLogf("--- polling AudioStatus + ReadQ for %d s (this is the position-units "
-           "answer: look for the field advancing 75 per second) ---",
-           kPollSeconds);
+    CDLogf("--- %s: polling AudioStatus + ReadQ for %d s ---", label, seconds);
 
     for (i = 0; i < polls; i++) {
         short buf[11];
@@ -210,11 +255,28 @@ static void PollPosition(void)
             err = CDControlCall(gP.cd.refNum, kcsAudioStatus, NULL, 0,
                                 buf, sizeof(buf));
         if (err == noErr) {
+            unsigned char *sb = (unsigned char *)buf;
+            long absF;
+
             if (!haveFirst) {
                 BlockMoveData(buf, first, sizeof(first));
                 haveFirst = true;
             }
             BlockMoveData(buf, last, sizeof(last));
+
+            /* bytes 3..5 are the absolute MSF, BCD, cross-checked to the frame
+             * against the TOC in Phase 0. */
+            absF = ((long)kBCDToBin(sb[3]) * 60L + kBCDToBin(sb[4])) * 75L
+                   + kBCDToBin(sb[5]);
+            if (absF == prevAbs) heldCount++;
+            prevAbs = absF;
+
+            if (sb[0] == kSynthStatusCompleted) {
+                if (!sawCompleted)
+                    CDLogf("  ★ status byte reached 0x%02X (COMPLETED) at poll %d, "
+                           "abs frame %ld", sb[0], i, absF);
+                sawCompleted = true;
+            }
         }
 
         err = CDStatusCall(gP.cd.refNum, kcsReadTheQSubcode, buf, sizeof(buf));
@@ -232,15 +294,29 @@ static void PollPosition(void)
         CDLogHex("last ", last, 22);
         gP.statusMoved = (memcmp(first, last, 22) != 0);
         CDLogf("  ⇒ reported status %s over %d s. %s",
-               gP.statusMoved ? "CHANGED" : "did NOT change",
-               kPollSeconds,
+               gP.statusMoved ? "CHANGED" : "did NOT change", seconds,
                gP.statusMoved
-                   ? "A moving position means the drive really is transporting."
-                   : "A frozen position means the drive is not playing, whatever "
+                   ? "A moving position means audio really is being delivered."
+                   : "A frozen position means nothing is playing, whatever "
                      "AudioPlay returned.");
+        if (watchCompletion) {
+            CDLogf("  ⇒ end-of-track watch: completed status %s, position held in "
+                   "%d of %d polls",
+                   sawCompleted ? "SEEN (0x13)" : "NEVER SEEN", heldCount, polls);
+            if (!sawCompleted)
+                CDLogf("    the track boundary was not reached, or completion is not "
+                       "being reported. Either way a game polling for track end "
+                       "would still be waiting.");
+        }
     } else {
-        CDLogf("  ⇒ AudioStatus never answered. Strong H2 signal.");
+        CDLogf("  ⇒ AudioStatus never answered.");
     }
+    return heldCount;
+}
+
+static void PollPosition(void)
+{
+    (void)PollFor(kPollSeconds, "phase A (track start)", false);
 }
 
 static void RunProbe(void)
@@ -409,6 +485,90 @@ static void RunProbe(void)
                                      param, sizeof(param), NULL, 0);
         CDLogf("  resume err=%d", gP.resumeErr);
         SleepTicks(60);
+    }
+
+    /* ============================================================================
+     * ★ PHASES B AND C — the two mechanism gaps that have been open since the
+     * beginning, and that the ship gate cannot be closed without.
+     *
+     * Everything before this point plays the FIRST audio track from its START, for
+     * ten seconds. That is all any run has ever done, so two things a real game does
+     * routinely have never once executed on hardware:
+     *
+     *   B  a second AudioPlay for a DIFFERENT track. The pump has to recompute
+     *      gTrackStartLBA and the play range; nothing has ever made it.
+     *   C  a track reaching its NATURAL END. The pump is supposed to hold the final
+     *      position and report status 0x13 (completed) instead of reverting to the
+     *      driver's stale answer — the path a looping game polls for. Never run,
+     *      because a probe that stops after twelve seconds never reaches the end of
+     *      a three-minute track.
+     *
+     * C is made cheap by starting playback a few seconds BEFORE the boundary rather
+     * than waiting out the track: the pump derives the end of the range from the
+     * TOC, so it arrives on schedule either way.
+     * ============================================================================ */
+    {
+        short idxB = -1;
+        int   i;
+
+        /* A different audio track that still has a successor in the TOC, since the
+         * end of the range is the next track's start. */
+        for (i = 0; i < gP.toc.trackCount - 1; i++) {
+            if (i == gP.audioTrackIdx) continue;
+            if (gP.toc.track[i].isData)  continue;
+            idxB = (short)i;
+            break;
+        }
+
+        if (gP.playErr != noErr) {
+            CDLogf("--- phases B and C SKIPPED: phase A never played ---");
+        } else if (idxB < 0) {
+            CDLogf("--- phases B and C SKIPPED ---");
+            CDLogf("  no second audio track with a successor in the TOC, so there is");
+            CDLogf("  no track to switch to and no boundary to run into. A disc with");
+            CDLogf("  three or more audio tracks exercises both.");
+        } else {
+            long startB = gP.toc.track[idxB].lba;
+            long endB   = gP.toc.track[idxB + 1].lba;
+
+            /* ---- PHASE B: switch to a different track ---- */
+            CDLogf("=== PHASE B: switch to track %d (LBA %ld..%ld) ===",
+                   gP.toc.track[idxB].number, startB, endB);
+            CDLogf("  the pump should report 'inside track %d' and the cursor should",
+                   gP.toc.track[idxB].number);
+            CDLogf("  restart from zero rather than continuing phase A's count.");
+            CDProgressSay("PHASE B: switching to track %d - LISTEN",
+                          gP.toc.track[idxB].number);
+
+            if (PlayAtLBA(startB, "phase B") == noErr)
+                (void)PollFor(6, "phase B (track switch)", false);
+            else
+                CDLogf("  ⇒ the switch was REFUSED. A game changing tracks would get "
+                       "silence here.");
+
+            /* ---- PHASE C: run into the end of that track ---- */
+            {
+                long lead  = 6L * kCDDASectorsPerSec;   /* start 6 s before the end */
+                long startC = endB - lead;
+                if (startC < startB) startC = startB;
+
+                CDLogf("=== PHASE C: end of track %d, starting %ld s before the "
+                       "boundary ===", gP.toc.track[idxB].number,
+                       (endB - startC) / kCDDASectorsPerSec);
+                CDLogf("  expect the position to climb to LBA %ld and then STOP, with",
+                       endB);
+                CDLogf("  the status byte becoming 0x13 and the pump reporting state=3.");
+                CDLogf("  a game waiting for the end of a track is waiting for exactly");
+                CDLogf("  this, and it has never happened on hardware before now.");
+                CDProgressSay("PHASE C: playing into the end of track %d",
+                              gP.toc.track[idxB].number);
+
+                if (PlayAtLBA(startC, "phase C") == noErr)
+                    (void)PollFor(12, "phase C (end of track)", true);
+                else
+                    CDLogf("  ⇒ REFUSED, so end-of-track behaviour is still untested.");
+            }
+        }
     }
 }
 

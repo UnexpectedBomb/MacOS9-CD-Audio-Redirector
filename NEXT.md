@@ -61,7 +61,7 @@ binary announces itself rather than misreporting. The matching set:
 |---|---|
 | **`CDAudioRedirector_v7`** | ★ **The current build.** Faceless, 16 request slots, ring in its own allocation (block 152 B). No freeze, nothing dropped |
 | **`CDPump_v11`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v6`** | Stands in for a game; reports the pump's published state under every poll. Unit-table sweep is now **opt-in** (option), and it refuses to run with no disc |
+| **`CDPlayProbe_v7`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
 | **`CDTraceRead_v3`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
@@ -93,14 +93,14 @@ and "read from the last banner" has already pointed at the wrong session once.
 1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
    drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v6`**. Expect music, `the CD Audio Redirector IS resident`, and a
+3. Run **`CDPlayProbe_v7`**. Expect music, `the CD Audio Redirector IS resident`, and a
    `pump: beat=… reqR=… reqW=…` line under every poll.
 4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
    relied on as the only channel.
 
 **The diagnostic build** (`CDPump_v11`), when you want the window and manual control:
 reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
-`CDPlayProbe_v6`, then click the pump window to stop. `CDTraceRead_v3` shows the trace.
+`CDPlayProbe_v7`, then click the pump window to stop. `CDTraceRead_v3` shows the trace.
 
 ⚠ **Always confirm the disc has mounted before launching the probe.** With no disc there is no
 CD in the drive queue; the probe now refuses rather than sweeping the unit table, which hung
@@ -203,15 +203,25 @@ same total system-heap cost. `CD_RING_SEPARATE` is now the default. Full account
 size, not that we understand what a 468-byte allocation does to this machine. If this ever
 misbehaves elsewhere, start there.
 
-### 2. Multi-track and looping behaviour
-**Repeat play is DONE and PASSED** (2026-08-06b, three plays against one live pump: cursor
-restarts from zero every time, 0 underruns, block size taken and given back three times each
-— see FINDINGS). Still open, and both need a probe change because `CDPlayProbe` always
-targets the *first* audio track and always stops after ~12 s:
+### 2. Multi-track and looping behaviour — **probe support BUILT, not yet run**
+**Repeat play is DONE and PASSED** (2026-08-06b). The two remaining gaps needed a probe that
+could target a chosen track and reach a track boundary; `CDPlayProbe_v7` now does both, in
+one run, with no extra reboots:
 
-- a second `AudioPlay` for a **different** track (new `gTrackStartLBA`, new range);
-- a track played to its **natural end**, confirming the position holds with status `0x13`
-  rather than reverting.
+- **Phase B — track switch.** After phase A's ten seconds on the first audio track, it issues
+  a second `AudioPlay` for a *different* track and polls six seconds. The pump has to
+  recompute `gTrackStartLBA` and the play range; that has never executed on hardware.
+- **Phase C — natural end of track.** Rather than sitting through a three-minute track, it
+  starts playback **six seconds before the boundary** — the pump derives the end of the range
+  from the TOC, so the boundary arrives on schedule either way. It then watches for the status
+  byte reaching `0x13` and the position ceasing to advance, which is exactly what a looping
+  game polls for.
+
+Both phases skip themselves, loudly, on a disc without a second audio track that has a
+successor in the TOC. Use a disc with three or more audio tracks.
+
+⚠ Phases B and C use the position encoding phase A discovered, so if phase A fails they are
+skipped rather than run against a guess.
 
 ### 3. ⚠ A REAL MIXED-MODE GAME DISC — the biggest untested gap
 Everything so far used a pressed *audio* CD. Untested and materially different:

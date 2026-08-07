@@ -248,7 +248,10 @@ void CDPToC(ConstStr255Param src, char *dst, int dstSize)
 
 void CDLogBanner(const char *probeName, const char *note)
 {
-    CDLogf("");
+    /* A blank separator line. Spelled with an explicit "%s" because an empty format
+     * string is exactly what -Wformat-zero-length exists to flag, and the new format
+     * checking should stay signal rather than becoming noise people learn to ignore. */
+    CDLogf("%s", "");
     CDLogf("========================================================");
     CDLogf("=== %s", probeName);
     if (note != NULL && note[0] != 0) CDLogf("=== %s", note);

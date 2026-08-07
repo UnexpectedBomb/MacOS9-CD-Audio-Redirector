@@ -42,6 +42,16 @@
 #define KeyIsDown(km, code) \
     ((((unsigned char *)(km))[(code) >> 3] & (1 << ((code) & 7))) != 0)
 
+/* ★ printf format checking on all three of these.
+ *
+ * Without it the compiler will not look inside a format string, and a "%ld" with no
+ * argument compiles silently and prints a garbage address at runtime. That happened
+ * while writing the end-of-track phase, in a diagnostic whose entire job is to be
+ * trustworthy. GCC checks these for free once told what they are, so the whole class
+ * is now a build error rather than a thing to be careful about. */
+#define CD_PRINTFLIKE(fmtArg, firstVararg) \
+    __attribute__((format(printf, (fmtArg), (firstVararg))))
+
 /* ---- what discovery found ------------------------------------------------- */
 
 typedef struct {
@@ -62,7 +72,7 @@ typedef struct {
  * even if the log never reaches disc. */
 
 void CDProgressOpen(ConstStr255Param title);
-void CDProgressSay(const char *fmt, ...);
+void CDProgressSay(const char *fmt, ...) CD_PRINTFLIKE(1, 2);
 void CDProgressClose(void);
 
 /* ---- logging -------------------------------------------------------------- */
@@ -76,7 +86,7 @@ void    CDLogClose(void);
 void    CDLogFlush(void);
 
 /* Writes one line and flushes it. */
-void CDLogf(const char *fmt, ...);
+void CDLogf(const char *fmt, ...) CD_PRINTFLIKE(1, 2);
 
 /* ★ Silence the log and the progress window for the duration of a call.
  *
@@ -106,7 +116,7 @@ void CDLogDiag(short *quietDepth, short *lastErr, long *writes);
 
 /* Writes one line, flushes it, AND puts it on screen. Use immediately before
  * every driver call. */
-void CDLogStep(const char *fmt, ...);
+void CDLogStep(const char *fmt, ...) CD_PRINTFLIKE(1, 2);
 
 /* Hex dump. Offsets are printed in HEX (a decimal offset in a hex dump is just
  * cruel) and relative to baseOff, so a caller feeding the dump in chunks still
