@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v7"
+#define kVersionString  "CDPlayProbe v8"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -540,11 +540,14 @@ static void RunProbe(void)
             CDProgressSay("PHASE B: switching to track %d - LISTEN",
                           gP.toc.track[idxB].number);
 
-            if (PlayAtLBA(startB, "phase B") == noErr)
+            /* ★ POLL REGARDLESS OF THE RETURN CODE. See phase C below for why. */
+            {
+                OSErr perr = PlayAtLBA(startB, "phase B");
+                if (perr != noErr)
+                    CDLogf("  ⚠ the driver returned %d, but the redirector may well "
+                           "be playing anyway — polling to find out.", perr);
                 (void)PollFor(6, "phase B (track switch)", false);
-            else
-                CDLogf("  ⇒ the switch was REFUSED. A game changing tracks would get "
-                       "silence here.");
+            }
 
             /* ---- PHASE C: run into the end of that track ---- */
             {
@@ -563,10 +566,34 @@ static void RunProbe(void)
                 CDProgressSay("PHASE C: playing into the end of track %d",
                               gP.toc.track[idxB].number);
 
-                if (PlayAtLBA(startC, "phase C") == noErr)
-                    (void)PollFor(12, "phase C (end of track)", true);
-                else
-                    CDLogf("  ⇒ REFUSED, so end-of-track behaviour is still untested.");
+                /* ★ POLL EVEN IF THE DRIVER REFUSES — the v7 run's whole lesson.
+                 *
+                 * The original driver returned paramErr (-50) for this mid-track
+                 * address, all three runs, and this probe took that as "no playback"
+                 * and skipped the poll. It was wrong: the handler posts the request to
+                 * the pump BEFORE it chains, so the pump had already accepted it. The
+                 * engine log showed exactly the right thing happening while nobody was
+                 * looking:
+                 *
+                 *     pump: play LBA 32847 .. 33297 (450 sectors, 6 s)
+                 *     pump: inside track 2 (starts at LBA 13922)
+                 *
+                 * A range ending precisely on the track boundary — the thing this phase
+                 * exists to observe — ran three times unobserved.
+                 *
+                 * With the redirector installed, the DRIVER's return code no longer
+                 * tells you whether audio will play. Only the pump knows, so ask the
+                 * pump: poll, and read `state` and the position. */
+                OSErr perr = PlayAtLBA(startC, "phase C");
+                if (perr != noErr) {
+                    CDLogf("  ⚠ the original driver REFUSED this address (err=%d).",
+                           perr);
+                    CDLogf("    That is its opinion, not the redirector's: our handler");
+                    CDLogf("    posts the request before chaining, so the pump has");
+                    CDLogf("    already taken it. Polling anyway — watch `state` in the");
+                    CDLogf("    pump lines below, not the error above.");
+                }
+                (void)PollFor(12, "phase C (end of track)", true);
             }
         }
     }

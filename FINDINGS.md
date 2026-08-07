@@ -2525,3 +2525,71 @@ answered the question from the log already in hand, with no extra run.
 *General lesson, and the second time this project has learned a version of it: instrumentation
 has to be able to show the thing you will eventually want to ask about. The first time it was
 a heartbeat on a dead channel; this time it was a breadcrumb with no clock.*
+
+# Run 2026-08-07i: phase B PASSES; phase C ran unobserved because the probe gave up
+
+`CDPlayProbe_v7` against `CDAudioRedirector_v7`, three runs, no crashes. Logs in
+`logs/2026-08-07-probe-v7-phasesBC/`.
+
+## ✅ PHASE B — the track switch works
+
+All three runs:
+
+```
+--- phase B: AudioPlay at LBA 13922 = 03:07:47 ---
+  AudioPlay err=0
+pump: play LBA 13922 .. 33297 (19375 sectors, 258 s)
+pump: inside track 2 (starts at LBA 13922)
+poll 1: pump: ... state=1 absF=14109 ...
+```
+
+The pump recomputed the range **and** the track base, and `absF = 14109` against track 2's
+absolute start of 14072 is **37 frames in** — the cursor restarted for the new track rather
+than continuing phase A's count. That path had never executed on hardware. It works.
+
+## ⚠ PHASE C — the driver refused, the pump played anyway, and the probe watched neither
+
+```
+--- phase C: AudioPlay at LBA 32847 = 07:19:72 ---
+  Control csCode=104 err=-50
+  ⇒ REFUSED, so end-of-track behaviour is still untested.
+```
+
+That conclusion was wrong. The engine log, same moment, all three runs:
+
+```
+pump: play LBA 32847 .. 33297 (450 sectors, 6 s)
+pump: inside track 2 (starts at LBA 13922)
+```
+
+**The pump accepted it and played a range ending exactly on the track boundary** — the six
+seconds this phase exists to observe — three times, with nobody watching, because the probe
+took the driver's return code as the answer and skipped the poll.
+
+### The real finding: with the redirector installed, the driver's return code no longer tells you whether audio will play
+
+The handler posts the request to the pump **before** it chains to the original driver. So the
+pump has already accepted the work by the time the driver forms an opinion, and the two can
+disagree. Here they did: the original `.AppleCD` returns `paramErr` for a **mid-track**
+address — track starts are accepted (phases A and B), an address inside a track is not — while
+the pump resolved it correctly and played.
+
+Two consequences worth separating:
+
+1. **For the probe (fixed).** `CDPlayProbe_v8` polls regardless of the return code, and says
+   why. Only the pump knows whether audio is happening, so ask the pump.
+2. **For the product (open, not yet changed).** A game that issues a mid-track `AudioPlay`
+   gets an error back while the music plays. A game that *checks* that error could conclude CD
+   audio is unavailable and disable its music — which would defeat the extension while the
+   redirector is working perfectly. Real games mostly address track starts, which return
+   `noErr`, so this is a secondary risk rather than an urgent one; but the ship gate's
+   standard is "every time", and this is a path where the game could be told "no" while we
+   say "yes". **The candidate change is to return `noErr` when we have accepted a request we
+   intend to service** — the same spirit as already rewriting `AudioStatus`. Not done: it
+   alters what the game sees, and that deserves its own run rather than being folded into a
+   test fix.
+
+## The pause did not recur
+
+No run showed anything like the 10–15 s stall. The STEP timestamps are in place now
+(`STEP [t=6570] Control csCode=104`), so if it returns, the stalling call names itself.
