@@ -2095,3 +2095,70 @@ nothing, and that trap has already cost this project a cycle.
 
 ⚠ bisectA deliberately reinstates v1's request-dropping bug. It answers a question; it is not
 a shipping candidate.
+
+# Run 2026-08-07c: bisectA froze — the ring's BEHAVIOUR is innocent, its SIZE is not
+
+`CDAudioRedirector_bisectA` = v4's memory layout, v1's behaviour. **Froze at poll 7 (~1.75 s),
+the earliest of any run.** Logs in `logs/2026-08-07-bisectA/`.
+
+## Confirming which binary ran, since the banner could not
+
+⚠ My mistake: bisectA and the shipping build shared a version string, so the banner says the
+same thing for both. The behaviour disambiguates it, but only by luck:
+
+```
+--- request 2: csCode 104 ---          only ONE request logged; 0 and 1 skipped
+pump: ... reqSeen=1 ... reqR=3 reqW=3  serviced 1 of 3 posted, reqRead jumped to reqWrite
+```
+
+The ring build services all three and reports `reqSeen=3`. This is `CD_RING_MODE=0`, so it
+was bisectA. **Fixed for every future build:** the log now prints its own configuration from
+the compiled constants — `build config: CD_RING_MODE=… ringEntries=… faceless=… structBytes=…`
+— which cannot drift the way a hand-maintained version string can.
+
+## The result
+
+| build | behaviour | block size | outcome |
+|---|---|---|---|
+| v1 | single-slot | ~148 B | **clean, 4 runs** |
+| v2 / v3 / v4 | ring, drain-all | 468 B | froze, 3 runs |
+| **bisectA** | **single-slot (v1's)** | **468 B** | **froze, poll 7** |
+
+Reverting the behaviour changed nothing. **The drain loop and the variable-offset
+interrupt-level write are exonerated.** What tracks the fault, across all eight runs, is the
+size of the one `NewPtrSysClear` in the system heap.
+
+That also explains what had been the most confusing observation: the instrumentation showed
+the ring **idle and consistent** at the moment of the freeze. It was idle because it is not
+the thing going wrong. The allocation is.
+
+## What this most likely means
+
+The fault is almost certainly **not ours**. We are allocating 320 bytes more from the system
+heap and something else in that heap stops working. The obvious neighbour is this machine's
+experimental **USB 2.0 EHCI driver** — system-heap resident, doing bus-master DMA. An
+unchecked allocation or a fixed-size assumption over there would behave exactly like this:
+intermittent, onset varying with timing, and entirely invisible from our side.
+
+This is why the USB 2.0 exoneration was withdrawn, and it now looks actively wrong.
+
+## Next: `CDAudioRedirector_bisectB` — the good behaviour on a small allocation
+
+Keeps the behaviour that was just exonerated (drain every request, nothing lost, `reqDropped`
+still reports any overflow) and shrinks the ring from 16 entries to **2**, taking the block
+from **468 bytes back to 188** — close to v1's ~148.
+
+Unlike bisectA this is a **potential shipping candidate**, not a pure diagnostic: two slots
+fix the realistic Stop-then-Play drop, and an overflow is still counted, which the ship gate
+requires. Whether two slots are *enough* is a separate question from whether this freezes.
+
+Verified before shipping it to hardware: the two resident engines differ, each app embeds the
+right one, and the struct sizes really are 468 versus 188.
+
+New in both builds: the engine records **`FreeMemSys()` and `MaxMemSys()` at install time**
+and publishes them, and the installer logs them. If the system heap turns out to be nearly
+exhausted, 320 bytes being decisive stops being a mystery and becomes an obvious consequence.
+
+- **bisectB clean** ⇒ allocation size confirmed, and we have a shipping candidate to harden.
+- **bisectB freezes** ⇒ the threshold is tighter than 188 bytes, and the block has to shrink
+  another way — or the machine has to be tested without the USB 2.0 stack.

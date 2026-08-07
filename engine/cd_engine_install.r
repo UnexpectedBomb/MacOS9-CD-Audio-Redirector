@@ -32,10 +32,10 @@ resource 'SIZE' (-1) {
 
 resource 'vers' (1, "CDPump") {
     0x00,
-    0x90,                   /* 9.0 */
+    0xA0,                   /* 10.0 */
     development,
     0x01,
     verUS,
-    "9.0d1",
-    "9.0d1, CDPump - driver patch and audio pump, diagnostic build"
+    "10.0d1",
+    "10.0d1, CDPump - driver patch and audio pump, diagnostic build"
 };

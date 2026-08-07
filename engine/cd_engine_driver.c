@@ -428,6 +428,18 @@ static OSErr EngineInit(CDEngineInfo *info)
         gPub = (CDEnginePublic *)NewPtrSysClear((Size)sizeof(CDEnginePublic));
         if (gPub == NULL) { info->status = kEngineNoMemory; return noErr; }
     }
+    /* ★ Record what the system heap looks like AFTER we have taken our share. This is
+     * the number the freeze investigation now turns on: the fault tracks the size of
+     * this block and nothing else, so how much room was left matters more than any
+     * property of our own code. Cheap, and it is on the record before anything can go
+     * wrong. */
+    {
+        Size grow = 0;
+        gPub->sysFreeAtInit    = (long)FreeMemSys();
+        gPub->sysLargestAtInit = (long)MaxMemSys(&grow);
+        gPub->pubBlockBytes    = (long)sizeof(CDEnginePublic);
+    }
+
     gPub->magic          = kEngineMagic;
     gPub->version        = kEngineVersion;
     gPub->patched        = 0;

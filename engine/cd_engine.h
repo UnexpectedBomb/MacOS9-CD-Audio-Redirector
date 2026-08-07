@@ -188,7 +188,23 @@ typedef struct {
  * enormous headroom: the deepest backlog ever observed is 3. It is sized for the case
  * that has never happened rather than the one that has, because the cost is 320 bytes
  * and the alternative failure is silent. */
+/* ★ Overridable, because the SIZE of this block is now the prime suspect.
+ *
+ * bisectA settled it: v1's BEHAVIOUR on v4's MEMORY still froze the machine, at poll 7,
+ * the earliest yet. Reverting the drain loop and the variable-offset write changed
+ * nothing. What did not change was the block: 456 bytes instead of v1's ~148, and every
+ * byte of that difference is this ring.
+ *
+ * So the ring's ENTRY COUNT is the dial. Each entry costs 20 bytes:
+ *
+ *   16 entries -> 456 bytes   froze, 4 runs out of 4 (v2, v3, v4, bisectA)
+ *    2 entries -> 176 bytes   the candidate: closest to v1 while still fixing the
+ *                             realistic Stop-then-Play drop
+ *    1 entry   -> 156 bytes   effectively v1's footprint, for finding the threshold
+ */
+#ifndef kEngineReqRingEntries
 #define kEngineReqRingEntries   16
+#endif
 
 /* ★ BISECT SWITCH — separates the two things that changed together in v2.
  *
@@ -306,6 +322,20 @@ typedef struct {
     volatile short  logQuietDepth;   /* > 0 means CDLogf is discarding lines     */
     volatile short  logLastErr;      /* last FSWrite result in the pump          */
     volatile long   logWrites;       /* lines the pump handed to FSWrite         */
+
+    /* ★ How much room is left in the SYSTEM HEAP, and how big this block is.
+     *
+     * The freeze now tracks the size of this allocation and nothing else, which points
+     * away from our logic and at the heap itself: this machine also carries an
+     * experimental USB 2.0 EHCI driver, whose buffers live in the same heap. If the
+     * system heap is nearly exhausted, 308 extra bytes is exactly the sort of nudge
+     * that makes someone else's unchecked allocation fail.
+     *
+     * Recorded at install time so the number is on the record before anything can go
+     * wrong, and published so the probe can report it even if the pump's log dies. */
+    volatile long   sysFreeAtInit;   /* FreeMemSys() after our allocations       */
+    volatile long   sysLargestAtInit;/* MaxMemSys() - the biggest single block    */
+    volatile long   pubBlockBytes;   /* sizeof(CDEnginePublic), as the ENGINE saw it */
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

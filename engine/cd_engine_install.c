@@ -336,10 +336,10 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 }
 
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v5"
+#define kVersionString  "CD Audio Redirector v6"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v9"
+#define kVersionString  "CDPump v10"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
@@ -461,6 +461,17 @@ int main(void)
     logOK = CDLogOpen(kLogFileName);
 #endif
     if (!logOK) CDProgressSay("!! could not open the log - screen only");
+
+    /* ★ Say what this binary actually IS, from the compiled constants themselves.
+     *
+     * The bisectA run had to be identified from its behaviour, because two different
+     * builds carried the same version string and the log could not tell them apart.
+     * A version string is a promise a human has to keep; these values are the build.
+     * They cannot drift, and every run is now self-identifying. */
+    CDLogf("  build config: CD_RING_MODE=%d  ringEntries=%d  faceless=%d  "
+           "structBytes=%ld",
+           (int)CD_RING_MODE, (int)kEngineReqRingEntries, (int)CD_FACELESS,
+           (long)sizeof(CDEnginePublic));
 
 #if CD_FACELESS
     CDLogBanner(kVersionString " - Red Book CD audio for legacy Mac CD games",
@@ -597,6 +608,27 @@ int main(void)
              ? "(ring, double buffers, sound channel and TOC are ready)"
              : "(NO AUDIO: interception will still work, but nothing will play)");
     CDLogf("  published block = 0x%08lX", (unsigned long)gInfo.pubBlock);
+
+    /* ★ The system heap, which is now the prime suspect. bisectA proved our behaviour
+     * innocent: reverting the drain loop and the variable-offset write changed nothing,
+     * and the only thing left that differs from the clean v1 build is how many bytes
+     * this block takes out of the system heap. Print what the ENGINE measured, plus
+     * this application's own view of the struct size — if those two disagree the whole
+     * investigation has been chasing the wrong thing. */
+    if (gInfo.pubBlock != NULL) {
+        CDEnginePublic *p = (CDEnginePublic *)gInfo.pubBlock;
+        CDLogf("  SYSTEM HEAP at init: %ld bytes free, largest block %ld",
+               p->sysFreeAtInit, p->sysLargestAtInit);
+        CDLogf("  published block is %ld bytes (ring holds %d entries)",
+               p->pubBlockBytes, (int)kEngineReqRingEntries);
+        if (p->pubBlockBytes != (long)sizeof(CDEnginePublic))
+            CDLogf("  !! the ENGINE thinks this struct is %ld bytes and this APP thinks "
+                   "%ld - a layout mismatch, and nothing below can be trusted",
+                   p->pubBlockBytes, (long)sizeof(CDEnginePublic));
+        if (p->sysFreeAtInit > 0 && p->sysFreeAtInit < 64L * 1024L)
+            CDLogf("  ⚠ under 64K free in the system heap. At that point 300 extra "
+                   "bytes is enough to change who fails to allocate.");
+    }
     CDLogf("  Gestalt registration: NewGestaltValue=%d ReplaceGestaltValue=%d "
            "SetGestaltValue=%d  (1 = not attempted)",
            gInfo.gestaltNewErr, gInfo.gestaltReplaceErr, gInfo.gestaltSetErr);
