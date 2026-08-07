@@ -158,7 +158,7 @@ audio surface convincingly. A **call trace (Phase 0)** tells us which, plus the 
   PPC/CFM. **Reconfirm** whether any part can be Retro68 (e.g. the Phase-0/1 spikes as plain apps — yes,
   those can be Retro68).
 - Spikes (Phase 0 trace, Phase 1 player) are **ordinary apps** → Retro68 is fine and faster to iterate.
-- Reuse the project's build/push pipeline conventions (`push-to-pi.sh`, APM-wrap for mountable images,
+- Reuse the project's build/staging pipeline conventions (`stage-artifacts.sh`, APM-wrap for mountable images,
   version-stamped artifacts).
 
 ## 9. Prior art / references to pull in the dedicated session

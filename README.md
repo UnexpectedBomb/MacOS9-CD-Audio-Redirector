@@ -161,8 +161,9 @@ cmake -S engine -B engine/build \
 cmake --build engine/build
 ```
 
-The `scripts/push-to-pi.sh` in each component copies build output to a local file share for
-transfer to the OS 9 machine. It is specific to this author's setup and is not needed to build.
+After a build, `scripts/stage-artifacts.sh` can copy the results somewhere the OS 9 machine
+can reach. It is a convenience, it is not needed to build, and it does nothing unless you
+point it at a destination of your own (see the comments at the top of that file).
 
 ## Credits
 

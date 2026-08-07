@@ -56,7 +56,7 @@ add_dependencies(CDTraceRead_v5_disk CDTraceRead_v5_APPL)
 # Post-build: stage to the Pi share for the OS 9 machine to pick up over AFP.
 # Non-fatal if the Pi is unreachable.
 add_custom_command(TARGET CDTraceRead_v5_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/stage-artifacts.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDTraceRead_v5
-    COMMENT "Pushing CDTraceRead_v5 to pi3.local:/home/csell/shared/"
+    COMMENT "Staging CDTraceRead_v5"
     VERBATIM)

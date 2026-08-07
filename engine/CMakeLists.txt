@@ -82,9 +82,9 @@ add_custom_target(CDPump_v13_disk ALL
 add_dependencies(CDPump_v13_disk CDPump_v13_APPL)
 
 add_custom_command(TARGET CDPump_v13_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/stage-artifacts.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDPump_v13
-    COMMENT "Pushing CDPump_v13 to pi3.local" VERBATIM)
+    COMMENT "Staging CDPump_v13" VERBATIM)
 
 # --- the SHIPPING artifact: the same code, faceless ---------------------------
 #
@@ -128,9 +128,9 @@ add_custom_target(CDAudioRedirector_v9_disk ALL
 add_dependencies(CDAudioRedirector_v9_disk CDAudioRedirector_v9_APPL)
 
 add_custom_command(TARGET CDAudioRedirector_v9_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/stage-artifacts.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_v9
-    COMMENT "Pushing CDAudioRedirector_v9 to pi3.local" VERBATIM)
+    COMMENT "Staging CDAudioRedirector_v9" VERBATIM)
 
 # --- bisectB: the good behaviour, on a SMALL allocation ----------------------
 #
@@ -197,9 +197,9 @@ add_custom_target(CDAudioRedirector_bisectB_disk ALL
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectB.img)
 add_dependencies(CDAudioRedirector_bisectB_disk CDAudioRedirector_bisectB_APPL)
 add_custom_command(TARGET CDAudioRedirector_bisectB_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/stage-artifacts.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_bisectB
-    COMMENT "Pushing CDAudioRedirector_bisectB to pi3.local" VERBATIM)
+    COMMENT "Staging CDAudioRedirector_bisectB" VERBATIM)
 
 # --- bisectC: same, with FOUR slots -----------------------------------------
 #
@@ -271,9 +271,9 @@ add_custom_target(CDAudioRedirector_bisectC_disk ALL
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDAudioRedirector_bisectC.img)
 add_dependencies(CDAudioRedirector_bisectC_disk CDAudioRedirector_bisectC_APPL)
 add_custom_command(TARGET CDAudioRedirector_bisectC_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/stage-artifacts.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_bisectC
-    COMMENT "Pushing CDAudioRedirector_bisectC to pi3.local" VERBATIM)
+    COMMENT "Staging CDAudioRedirector_bisectC" VERBATIM)
 
 # NOTE: the former bisectD target is gone - its configuration IS the shipping build
 # now (CD_RING_SEPARATE defaults to 1). bisectB (2 slots) and bisectC (4 slots) are kept

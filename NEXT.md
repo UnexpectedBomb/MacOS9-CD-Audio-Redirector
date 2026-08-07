@@ -54,7 +54,7 @@ FINDINGS 2026-08-07j.
 has never been tried (Jubadub's run), the **`paramErr` question** in step 5 is open, and the
 freeze's mechanism is mitigated rather than explained (FINDINGS 2026-08-07g).
 
-## Current artifacts (staged on the Pi at `/home/csell/shared/`)
+## Current artifacts (staged wherever `scripts/stage-artifacts.sh` points)
 
 **Engine block version 5.** Every reader checks it and refuses on a mismatch, so a stale
 binary announces itself rather than misreporting. The matching set:
@@ -266,7 +266,7 @@ ask every time. No em-dashes in anything published externally.
   wrong twice in three runs as the system gained capabilities. Re-check the tooling's
   conclusions whenever behaviour changes.
 - **A build script that hardcodes the artifact version will silently ship a stale binary.**
-  `engine/scripts/push-to-pi.sh` had `BASES="CDPump_v3"`; when the target became v4 it
+  the staging script had `BASES="CDPump_v3"` hardcoded; when the target became v4 it
   re-pushed the v3 still sitting in the build directory and printed a success line. It now
   takes the name from CMake and fails loudly if nothing was copied. **The four probe push
   scripts still hardcode their names** — latent, since those versions have not moved, but the

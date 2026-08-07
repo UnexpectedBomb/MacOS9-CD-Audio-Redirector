@@ -49,7 +49,7 @@ add_custom_target(CDAudioSpike_v1_disk ALL
 add_dependencies(CDAudioSpike_v1_disk CDAudioSpike_v1_APPL)
 
 add_custom_command(TARGET CDAudioSpike_v1_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Pushing CDAudioSpike_v1 to pi3.local:/home/csell/shared/"
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/stage-artifacts.sh
+            ${CMAKE_CURRENT_BINARY_DIR} CDAudioSpike_v1
+    COMMENT "Staging CDAudioSpike_v1"
     VERBATIM)

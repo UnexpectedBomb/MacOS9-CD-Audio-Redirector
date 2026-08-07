@@ -55,7 +55,7 @@ add_dependencies(CDTraceDump_v1_disk CDTraceDump_v1_APPL)
 # Post-build: stage to the Pi share for the OS 9 machine to pick up over AFP.
 # Non-fatal if the Pi is unreachable.
 add_custom_command(TARGET CDTraceDump_v1_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Pushing CDTraceDump_v1 to pi3.local:/home/csell/shared/"
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/stage-artifacts.sh
+            ${CMAKE_CURRENT_BINARY_DIR} CDTraceDump_v1
+    COMMENT "Staging CDTraceDump_v1"
     VERBATIM)

@@ -39,7 +39,7 @@ audio + data but *multisession*, a different layout again — an interesting ext
 data point, not a substitute.
 
 Artifacts are staged on the Pi share as `CDRecon_v2.bin` / `.img` and
-`CDPlayProbe_v2.bin` / `.img` in `/home/csell/shared/`. **Use v2 and trash v1** —
+`CDPlayProbe_v2.bin` / `.img` on the staging share. **Use v2 and trash v1** —
 v1 hung on its first hardware run (see below).
 
 **Modifier keys at launch:**

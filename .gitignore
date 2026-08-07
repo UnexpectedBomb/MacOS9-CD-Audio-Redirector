@@ -2,3 +2,6 @@ build/
 *.o
 *.obj
 .DS_Store
+
+# Local staging destination for scripts/stage-artifacts.sh (machine-specific)
+.stage-target

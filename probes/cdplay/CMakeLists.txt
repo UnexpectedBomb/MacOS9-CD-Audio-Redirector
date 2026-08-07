@@ -50,7 +50,7 @@ add_custom_target(CDPlayProbe_v10_disk ALL
 add_dependencies(CDPlayProbe_v10_disk CDPlayProbe_v10_APPL)
 
 add_custom_command(TARGET CDPlayProbe_v10_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/stage-artifacts.sh
             ${CMAKE_CURRENT_BINARY_DIR} CDPlayProbe_v10
-    COMMENT "Pushing CDPlayProbe_v10 to pi3.local:/home/csell/shared/"
+    COMMENT "Staging CDPlayProbe_v10"
     VERBATIM)

@@ -49,9 +49,9 @@ add_custom_command(
 add_custom_target(CDPatch2a ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPatch2a.bin)
 
 add_custom_command(TARGET CDPatch2a POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Pushing CDPatch2a to pi3.local:/home/csell/shared/"
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/stage-artifacts.sh
+            ${CMAKE_CURRENT_BINARY_DIR} CDPatchInstall
+    COMMENT "Staging CDPatch2a"
     VERBATIM)
 
 # --- on-demand installer app (68K, so it can $$read the same blob) ---

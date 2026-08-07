@@ -55,7 +55,7 @@ add_dependencies(CDRecon_v2_disk CDRecon_v2_APPL)
 # Post-build: stage to the Pi share for the OS 9 machine to pick up over AFP.
 # Non-fatal if the Pi is unreachable.
 add_custom_command(TARGET CDRecon_v2_disk POST_BUILD
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/push-to-pi.sh
-            ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Pushing CDRecon_v2 to pi3.local:/home/csell/shared/"
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/stage-artifacts.sh
+            ${CMAKE_CURRENT_BINARY_DIR} CDRecon_v2
+    COMMENT "Staging CDRecon_v2"
     VERBATIM)
