@@ -224,6 +224,20 @@ is mid-track) **and the pump plays it anyway** — the handler posts before it c
 polls regardless for exactly that reason. See the open question in step 5.
 
 ### 3. ⚠ A REAL MIXED-MODE GAME DISC — the biggest untested gap
+**A copy of Warcraft: Orcs & Humans (original Mac CD) was bought 2026-08-07 and is in the
+post.** That is one of the two titles this project's problem statement names, so it is the
+canonical case rather than a proxy.
+
+When it arrives, before anything else: put it in a modern Mac and confirm the Finder mounts a
+data volume **while** the Music app shows audio tracks. Then run `CDRecon_v2` on the mini and
+check track 1 reads `DATA`. Only then is it worth a test boot.
+
+Note what is already instrumented for this: the pump logs **every serviced request** with its
+parameters, unbounded, to `CD Audio Redirector Log`. So a real game's call pattern - which
+tracks it asks for, in what order, by MSF or by track number, and how it polls - is captured
+without any new code. The 512-entry trace ring may wrap during a long session; the log will not.
+
+
 Everything so far used a pressed *audio* CD. Untested and materially different:
 - track 1 is **data**, so `DecodePos` must resolve positions on a disc whose first track is
   not audio;
