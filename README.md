@@ -73,7 +73,7 @@ patch returned 0, status=0, patched=1
 
 `patched=1` means it is installed and live.
 
-There is also a test program, **`CDPlayProbe_v10`** in [dist/](dist/), which stands in for a
+There is also a test program, **`CDPlayProbe_v11`** in [dist/](dist/), which stands in for a
 game: it issues the same legacy audio calls, plays a track, switches tracks, runs into a track
 boundary, and then asks you whether you heard anything. Useful if you want to check the
 extension without launching a game.
@@ -122,7 +122,7 @@ Whatever happens, the useful things are:
 - **which game and which disc**, and whether the music played,
 - the **`CD Audio Redirector Log`** file from your System Folder. Please send the whole file.
   It records what it found, what the game asked for, and what it did about it.
-- if you used `CDPlayProbe_v10`, the **`CD Play Probe Log`** as well.
+- if you used `CDPlayProbe_v11`, the **`CD Play Probe Log`** as well.
 
 If it does **not** work, the log is far more useful than a description, because it distinguishes
 "the extension never installed", "the game never asked for audio", and "the extension tried and

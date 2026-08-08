@@ -62,7 +62,7 @@ publish() {
 
 publish engine/build/CDAudioRedirector_v9.bin
 publish engine/build/CDAudioRedirector_v9.img
-publish probes/cdplay/build/CDPlayProbe_v10.bin
-publish probes/cdplay/build/CDPlayProbe_v10.img
+publish probes/cdplay/build/CDPlayProbe_v11.bin
+publish probes/cdplay/build/CDPlayProbe_v11.img
 
 echo "publish-dist: dist/ is clean"

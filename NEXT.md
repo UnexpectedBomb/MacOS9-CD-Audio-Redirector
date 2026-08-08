@@ -63,7 +63,7 @@ binary announces itself rather than misreporting. The matching set:
 |---|---|
 | **`CDAudioRedirector_v9`** | ★ **The current build.** Faceless, 16 request slots, ring in its own allocation (block 160 B). No freeze, nothing dropped |
 | **`CDPump_v13`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v10`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
+| **`CDPlayProbe_v11`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
 | **`CDTraceRead_v5`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
@@ -95,14 +95,14 @@ and "read from the last banner" has already pointed at the wrong session once.
 1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
    drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v10`**. Expect music, `the CD Audio Redirector IS resident`, and a
+3. Run **`CDPlayProbe_v11`**. Expect music, `the CD Audio Redirector IS resident`, and a
    `pump: beat=… reqR=… reqW=…` line under every poll.
 4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
    relied on as the only channel.
 
 **The diagnostic build** (`CDPump_v13`), when you want the window and manual control:
 reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
-`CDPlayProbe_v10`, then click the pump window to stop. `CDTraceRead_v5` shows the trace.
+`CDPlayProbe_v11`, then click the pump window to stop. `CDTraceRead_v5` shows the trace.
 
 ⚠ **Always confirm the disc has mounted before launching the probe.** With no disc there is no
 CD in the drive queue; the probe now refuses rather than sweeping the unit table, which hung
@@ -222,6 +222,26 @@ successor in the TOC. Use a disc with three or more audio tracks.
 ⚠ **Phase C's `AudioPlay` is REFUSED by the original driver** (`paramErr`, because the address
 is mid-track) **and the pump plays it anyway** — the handler posts before it chains. The probe
 polls regardless for exactly that reason. See the open question in step 5.
+
+### 2b. ✅ Phase D — data reads DURING playback (built, needs a mixed-mode disc)
+The contention case: a game reads level data off track 1 **while** its music plays. Never
+exercised, and the most likely thing to break under a real game, because the pump takes the
+drive's block size to 2352 for the whole of playback while the File Manager expects 512. That
+race is documented in `cd_pump_audio.c` and has never been resolved.
+
+`CDPlayProbe_v11` phase D hunts the **silent** version of that failure, not just errors:
+
+1. finds the CD's data volume and the largest file in its root;
+2. reads a 32 KB chunk with **nothing playing** and keeps a checksum;
+3. starts playback, then re-reads the same bytes 24 times during it;
+4. reports read errors, **checksum mismatches**, and the pump's underrun count.
+
+A mismatch means the same bytes read differently while audio was playing, which is corruption
+no other part of the system would report. Phase A is the built-in control for the other half:
+it plays identically with no data reads and has recorded zero underruns every run, so underruns
+appearing only in phase D means the reads are starving the audio.
+
+Skips loudly on a disc with no data volume, so it is harmless on an ordinary audio CD.
 
 ### 3. ⚠ A REAL MIXED-MODE GAME DISC — the biggest untested gap
 **A copy of Warcraft: Orcs & Humans (original Mac CD) was bought 2026-08-07 and is in the

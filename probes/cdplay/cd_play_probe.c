@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v10"
+#define kVersionString  "CDPlayProbe v11"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -319,6 +319,210 @@ static void PollPosition(void)
     (void)PollFor(kPollSeconds, "phase A (track start)", false);
 }
 
+/* ============================================================================
+ * ★ PHASE D — read the DATA track while the audio track is playing.
+ *
+ * This is the one thing a plain audio CD can never test, and the thing most
+ * likely to break under a real game: a mixed-mode game reads level data off
+ * track 1 WHILE its music plays from track 2 onwards.
+ *
+ * Why it is expected to be dangerous. To read CD-DA the pump takes the drive's
+ * block size to 2352 bytes (`TakeBlockSize` in cd_pump_audio.c) and holds it for
+ * the whole of playback. The File Manager, reading the data volume, expects 512.
+ * That race is documented in the pump and has never been resolved, because until
+ * now there has been no disc on which to provoke it.
+ *
+ * The failure it is really hunting is SILENT: not an error code, but a read that
+ * returns the wrong bytes. So this does not merely check for errors. It reads a
+ * file BEFORE playback starts, keeps a checksum, and re-reads the same bytes
+ * during playback. A mismatch is the smoking gun, and nothing else in the system
+ * would have reported it.
+ *
+ * The other half of the question is whether the data reads starve the audio.
+ * Phase A is the control for that: it plays the same way with no data reads and
+ * has recorded zero underruns every run. If underruns appear only in phase D,
+ * contention is the cause.
+ * ============================================================================ */
+
+#define kPhaseDChunk    (32L * 1024L)
+
+/* The CD's DATA volume, if it has one. Returns its vRefNum, or 0. */
+static short FindCDDataVolume(Str255 volName)
+{
+    HParamBlockRec hpb;
+    short          index;
+
+    for (index = 1; index < 32; index++) {
+        memset(&hpb, 0, sizeof(hpb));
+        volName[0] = 0;
+        hpb.volumeParam.ioNamePtr  = volName;
+        hpb.volumeParam.ioVolIndex = index;
+        if (PBHGetVInfoSync(&hpb) != noErr) break;
+        /* Mounted off our CD driver, and it must be a real filesystem: the
+         * audio-track pseudo-volume has files whose data forks are all zero. */
+        if (hpb.volumeParam.ioVDRefNum == gP.cd.refNum)
+            return hpb.volumeParam.ioVRefNum;
+    }
+    volName[0] = 0;
+    return 0;
+}
+
+/* Largest ordinary file in that volume's root, so the reads are worth doing. */
+static Boolean FindReadableFile(short vRefNum, FSSpec *spec, long *sizeOut)
+{
+    CInfoPBRec cpb;
+    short      fIndex;
+    long       best = 0;
+    Str255     bestName;
+
+    bestName[0] = 0;
+    for (fIndex = 1; fIndex < 200; fIndex++) {
+        Str255 fName;
+        fName[0] = 0;
+        memset(&cpb, 0, sizeof(cpb));
+        cpb.hFileInfo.ioNamePtr   = fName;
+        cpb.hFileInfo.ioVRefNum   = vRefNum;
+        cpb.hFileInfo.ioDirID     = fsRtDirID;
+        cpb.hFileInfo.ioFDirIndex = fIndex;
+        if (PBGetCatInfoSync(&cpb) != noErr) break;
+        if (cpb.hFileInfo.ioFlAttrib & ioDirMask) continue;
+        if (cpb.hFileInfo.ioFlLgLen > best) {
+            best = cpb.hFileInfo.ioFlLgLen;
+            BlockMoveData(fName, bestName, fName[0] + 1);
+        }
+    }
+    if (best <= 0) return false;
+    if (FSMakeFSSpec(vRefNum, fsRtDirID, bestName, spec) != noErr) return false;
+    *sizeOut = best;
+    return true;
+}
+
+/* Sum the first n bytes of an open file from the current position. Cheap and
+ * order-sensitive enough to catch a wrong-block-size read. */
+static unsigned long ChecksumRead(short ref, Ptr buf, long want, OSErr *errOut,
+                                  long *gotOut)
+{
+    unsigned long sum = 0;
+    long          count = want;
+    long          i;
+    OSErr         err;
+
+    err = FSRead(ref, &count, buf);
+    if (errOut) *errOut = err;
+    if (gotOut) *gotOut = count;
+    for (i = 0; i < count; i++)
+        sum = (sum << 1) ^ (sum >> 31) ^ (unsigned char)buf[i];
+    return sum;
+}
+
+static void PhaseD(long playLBA, const char *trackLabel)
+{
+    Str255  volName;
+    short   vRefNum;
+    FSSpec  spec;
+    long    fileSize = 0;
+    char    cname[64];
+    Ptr     buf;
+    short   ref = 0;
+    OSErr   err;
+    unsigned long baseSum = 0;
+    long    baseGot = 0;
+
+    CDLogf("=== PHASE D: read the DATA track while audio plays ===");
+
+    vRefNum = FindCDDataVolume(volName);
+    if (vRefNum == 0) {
+        CDLogf("  no data volume on this disc, so there is nothing to contend with.");
+        CDLogf("  ⇒ PHASE D SKIPPED. This needs a MIXED-MODE disc: track 1 data,");
+        CDLogf("    audio tracks after it. On a plain audio CD there is no test here.");
+        CDProgressSay("phase D skipped: no data volume");
+        return;
+    }
+    CDPToC(volName, cname, sizeof(cname));
+    CDLogf("  data volume '%s' (vRefNum=%d) is on our CD driver", cname, vRefNum);
+
+    if (!FindReadableFile(vRefNum, &spec, &fileSize)) {
+        CDLogf("  ⇒ PHASE D SKIPPED: no readable file in the root of '%s'.", cname);
+        return;
+    }
+    CDPToC(spec.name, cname, sizeof(cname));
+    CDLogf("  will read '%s' (%ld bytes) in %ld KB chunks", cname, fileSize,
+           kPhaseDChunk / 1024L);
+
+    buf = NewPtr(kPhaseDChunk);
+    if (buf == NULL) { CDLogf("  ⇒ PHASE D SKIPPED: out of memory"); return; }
+
+    /* ---- baseline: read it with NOTHING playing ---- */
+    err = FSpOpenDF(&spec, fsRdPerm, &ref);
+    if (err != noErr) {
+        CDLogf("  ⇒ PHASE D SKIPPED: could not open the file, err=%d", err);
+        DisposePtr(buf);
+        return;
+    }
+    (void)SetFPos(ref, fsFromStart, 0);
+    baseSum = ChecksumRead(ref, buf, kPhaseDChunk, &err, &baseGot);
+    CDLogf("  baseline read with nothing playing: %ld bytes, err=%d, checksum 0x%08lX",
+           baseGot, err, baseSum);
+    if (err != noErr || baseGot <= 0) {
+        CDLogf("  ⇒ PHASE D SKIPPED: the baseline read itself failed, so a mismatch");
+        CDLogf("    during playback would prove nothing.");
+        FSClose(ref); DisposePtr(buf); return;
+    }
+
+    /* ---- now start the music and read the same bytes again, repeatedly ---- */
+    CDLogf("  --- starting playback of %s, then reading during it ---", trackLabel);
+    CDProgressSay("PHASE D: data reads DURING playback");
+    (void)PlayAtLBA(playLBA, "phase D");
+
+    {
+        int  pass;
+        long mismatches = 0, readErrs = 0, totalBytes = 0;
+
+        for (pass = 0; pass < 24; pass++) {
+            OSErr         rerr;
+            long          got = 0;
+            unsigned long sum;
+
+            (void)SetFPos(ref, fsFromStart, 0);
+            sum = ChecksumRead(ref, buf, kPhaseDChunk, &rerr, &got);
+            totalBytes += got;
+
+            if (rerr != noErr) {
+                readErrs++;
+                CDLogf("  pass %2d: READ ERROR %d after %ld bytes", pass, rerr, got);
+            } else if (got != baseGot || sum != baseSum) {
+                mismatches++;
+                CDLogf("  pass %2d: ★ DATA MISMATCH. got %ld bytes (baseline %ld), "
+                       "checksum 0x%08lX (baseline 0x%08lX)",
+                       pass, got, baseGot, sum, baseSum);
+            }
+
+            if ((pass % 4) == 0) LogPumpState();
+            SleepTicks(kPollTicks);
+        }
+
+        CDLogf("  --- phase D result ---");
+        CDLogf("  %d passes, %ld bytes read during playback", 24, totalBytes);
+        CDLogf("  read errors: %ld    data mismatches: %ld", readErrs, mismatches);
+        LogPumpState();
+
+        if (mismatches > 0)
+            CDLogf("  ⇒ ★ THE BLOCK-SIZE RACE IS REAL. The same bytes read differently "
+                   "while audio was playing. A game reading level data would get "
+                   "corrupt data, silently. This must be fixed before shipping.");
+        else if (readErrs > 0)
+            CDLogf("  ⇒ data reads FAILED during playback. Not silent corruption, but a "
+                   "game would still be unable to read its own disc while music plays.");
+        else
+            CDLogf("  ⇒ data reads were correct throughout. The block-size race did not "
+                   "bite here. Check the underrun count above for the other half: if it "
+                   "rose while phase A's stayed at zero, the reads are starving the audio.");
+    }
+
+    FSClose(ref);
+    DisposePtr(buf);
+}
+
 static void RunProbe(void)
 {
     int t;
@@ -527,6 +731,11 @@ static void RunProbe(void)
             CDLogf("  no second audio track with a successor in the TOC, so there is");
             CDLogf("  no track to switch to and no boundary to run into. A disc with");
             CDLogf("  three or more audio tracks exercises both.");
+            /* Phase D still applies. The contention question does not need a second
+             * audio track, only a data track and something to play, and a game disc
+             * with one long audio track is a perfectly ordinary shape. */
+            if (gP.audioTrackIdx >= 0)
+                PhaseD(gP.toc.track[gP.audioTrackIdx].lba, "the only audio track");
         } else {
             long startB = gP.toc.track[idxB].lba;
             long endB   = gP.toc.track[idxB + 1].lba;
@@ -596,6 +805,9 @@ static void RunProbe(void)
                 }
                 (void)PollFor(12, "phase C (end of track)", true);
             }
+
+            /* ---- PHASE D: data reads during playback ---- */
+            PhaseD(startB, "track B");
         }
     }
 }
