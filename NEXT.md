@@ -289,7 +289,21 @@ investigation than the exposure costs.
 them back into the published tree, which is the leak one level up, and is exactly what happened
 in the first draft of this paragraph.)
 
-### 4. Third-party README, then the handoff
+### 4. ✅ HANDED OFF — repo public 2026-08-07, forum post made by the user
+`github.com/UnexpectedBomb/MacOS9-CD-Audio-Redirector` is public under MIT, `dist/` carries
+`CDAudioRedirector_v9` and `CDPlayProbe_v11`, and the user posted to macos9lives themselves.
+
+**Now waiting on Jubadub.** Two branches from here:
+
+- **It works for him.** Then the mixed-mode gap is closed by someone else's disc, and the
+  Warcraft disc in the post becomes a nice-to-have second data point rather than the critical
+  path.
+- **It does not.** The Warcraft disc arrives in a few days and becomes the troubleshooting
+  vehicle. **Ask for the log first, before any theory**: `CD Audio Redirector Log` distinguishes
+  "never installed", "the game never asked for audio" and "tried and failed", which are
+  indistinguishable from a verbal description. That is what the log was built to do.
+
+### 4b. (superseded) Third-party README, then the handoff
 ⚠ Gated by the ship gate at the top of this file: do not write the handoff for a build with a
 known path to music-not-starting. The README is not a place to disclose a hole we chose not to
 close.
