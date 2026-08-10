@@ -93,7 +93,7 @@ binary announces itself rather than misreporting. The matching set:
 |---|---|
 | **`CDAudioRedirector_v10`** | ★ **The current build.** Faceless, 64 request slots, ring in its own allocation (block 160 B). No freeze, nothing dropped |
 | **`CDPump_v14`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v12`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
+| **`CDPlayProbe_v12`** | Stands in for a game. Four phases: A track start, **B track switch**, **C natural end of track**, **D data reads DURING playback**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
 | **`CDTraceRead_v5`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
@@ -101,10 +101,10 @@ binary announces itself rather than misreporting. The matching set:
 | `CDAudioRedirector_bisectB` / `bisectC` | Inline-ring data points, 2 and 4 slots. Diagnostics that established the size threshold, **not** candidates — bisectB drops a request every run |
 | **`CDAudioRedirector_v1` + `CDPlayProbe_v3`** | ★ **The known-good control pair.** 4 runs, 0 freezes. Keep both on the share — this pair is what every regression gets measured against |
 
-⚠ Everything else is superseded: `CDAudioRedirector_v2`–`v6` and `bisectA/bisectD`,
-`CDPump_v4`–`v10`, `CDPlayProbe_v4/v5`, `CDTraceRead_v1/v2`. Readers built against an older
-engine version refuse rather than misreport, but delete them from the share anyway so the
-right file is the obvious one to pick.
+⚠ Everything else is superseded: `CDAudioRedirector_v2`–`v9` and `bisectA`/`bisectD`,
+`CDPump_v3`–`v13`, `CDPlayProbe_v4`–`v11`, `CDTraceRead_v1`–`v4`. Readers built against an
+older engine version refuse rather than misreport, but the share has accumulated dozens of
+files: delete the old ones so the right file is the obvious one to pick.
 
 **How to tell what you actually ran:** every build now logs its own configuration from the
 compiled constants. The current one says
