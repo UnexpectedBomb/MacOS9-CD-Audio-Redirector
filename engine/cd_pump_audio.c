@@ -204,7 +204,29 @@ OSErr CDPumpInit(short refNum, short driveNum)
     return noErr;
 }
 
-/* ---- block size, taken only while we are actually reading ------------------ */
+/* ---- block size -----------------------------------------------------------
+ *
+ * ⚠ READ THE CALL SITES BEFORE BELIEVING ANY SUMMARY OF THIS. The block size is
+ * taken ONCE when playback starts and given back only on stop, on reaching the end
+ * of the range, or on a failure to start. It is NOT taken and restored around each
+ * refill. So the drive sits at 2352 for the WHOLE of a piece of music, which may be
+ * minutes, and not for the ~200 ms of a read.
+ *
+ * That is the exposure phase D of CDPlayProbe hunts: a mixed-mode game reading level
+ * data off track 1 while its music plays goes through this same drive, and the File
+ * Manager expects 512. Every measurement so far has been on an audio CD, where
+ * nothing else reads the disc, so the window has never been tested.
+ *
+ * The earlier design in the retired engine/cd_engine_audio.c did take and restore
+ * per refill, which narrows the window without closing it. It is not obviously the
+ * better trade here: it puts two extra Control calls on the audio-critical path at
+ * roughly 10 Hz, and the ship gate cares more about the music starting and not
+ * breaking up than about a race nobody has yet observed. Closing it properly is the
+ * ATA route via the 'dvrf' handle.
+ *
+ * ⇒ Do not "fix" this speculatively. Run phase D on a mixed-mode disc first and let
+ * it say whether the reads actually come back wrong.
+ */
 
 static void TakeBlockSize(void)
 {
