@@ -41,8 +41,8 @@ issues — produces **audible music**, plus a truthful advancing position, on a 
 analog CD-audio path. Verified end to end many times, with the numbers checking out to the
 frame. Faceless Startup-Items packaging works, unattended, from a cold boot with an empty tray.
 
-✅ **The freeze is solved.** `CDAudioRedirector_v9` runs clean and drops nothing: 16 request
-slots with the ring in its own system-heap allocation, so the published block stays at 152
+✅ **The freeze is solved.** `CDAudioRedirector_v10` runs clean and drops nothing: the request
+ring lives in its own system-heap allocation, so the published block stays at 160
 bytes — essentially v1's 148, the size profile with the most hardware behind it. Three runs,
 120 polls, 18 of 18 requests serviced, 0 dropped.
 
@@ -50,9 +50,16 @@ bytes — essentially v1's 148, the size profile with the most hardware behind i
 on 2026-08-07, the latter landing on the track boundary to the frame. See the table in
 FINDINGS 2026-08-07j.
 
-⚠ **Still not finishable**, but what remains is no longer mechanism: a real **mixed-mode disc**
-has never been tried (Jubadub's run), the **`paramErr` question** in step 5 is open, and the
-freeze's mechanism is mitigated rather than explained (FINDINGS 2026-08-07g).
+★ **A REAL MIXED-MODE DISC HAS NOW BEEN TRIED, and it found a defect no test here could
+have.** Jubadub ran v9 against Warcraft: Orcs & Humans and the TOC parser called its 261 MB
+data track AUDIO, because it read the high nibble of the control field instead of the low one.
+On an all-audio disc both nibbles read as zero, so roughly thirty hardware runs could not have
+seen it. Fixed in **v10**, along with a pump guard that refuses to stream a DATA track and a
+ring grown 16 → 64 after his run overflowed it. Full account in FINDINGS 2026-08-07m.
+
+⚠ **Not finishable yet.** v10 has never run against a mixed-mode disc; it fixes a bug found on
+one but has not been tested on one. The `paramErr` question is settled-negative (step 5), and
+the freeze's mechanism is mitigated rather than explained (FINDINGS 2026-08-07g).
 
 ## Current artifacts (staged wherever `scripts/stage-artifacts.sh` points)
 
@@ -61,9 +68,9 @@ binary announces itself rather than misreporting. The matching set:
 
 | Artifact | What it is |
 |---|---|
-| **`CDAudioRedirector_v9`** | ★ **The current build.** Faceless, 16 request slots, ring in its own allocation (block 160 B). No freeze, nothing dropped |
-| **`CDPump_v13`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v11`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
+| **`CDAudioRedirector_v10`** | ★ **The current build.** Faceless, 64 request slots, ring in its own allocation (block 160 B). No freeze, nothing dropped |
+| **`CDPump_v14`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
+| **`CDPlayProbe_v12`** | Stands in for a game. Three phases now: A track start, **B track switch**, **C natural end of track**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
 | **`CDTraceRead_v5`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
@@ -78,11 +85,11 @@ right file is the obvious one to pick.
 
 **How to tell what you actually ran:** every build now logs its own configuration from the
 compiled constants. The current one says
-`build config: CD_RING_MODE=1  ringEntries=16  ringSeparate=1  faceless=1  structBytes=160`.
+`build config: CD_RING_MODE=1  ringEntries=64  ringSeparate=1  faceless=1  structBytes=160`.
 
 ## How to run it
 
-**`CDAudioRedirector_v9` is the build to run.** It meets the ship gate's two mechanical
+**`CDAudioRedirector_v10` is the build to run.** It meets the ship gate's two mechanical
 requirements — it does not freeze and it drops nothing — but it is not validated for release;
 see the remaining work below.
 
@@ -95,14 +102,14 @@ and "read from the last banner" has already pointed at the wrong session once.
 1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
    drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v11`**. Expect music, `the CD Audio Redirector IS resident`, and a
+3. Run **`CDPlayProbe_v12`**. Expect music, `the CD Audio Redirector IS resident`, and a
    `pump: beat=… reqR=… reqW=…` line under every poll.
 4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
    relied on as the only channel.
 
-**The diagnostic build** (`CDPump_v13`), when you want the window and manual control:
+**The diagnostic build** (`CDPump_v14`), when you want the window and manual control:
 reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
-`CDPlayProbe_v11`, then click the pump window to stop. `CDTraceRead_v5` shows the trace.
+`CDPlayProbe_v12`, then click the pump window to stop. `CDTraceRead_v5` shows the trace.
 
 ⚠ **Always confirm the disc has mounted before launching the probe.** With no disc there is no
 CD in the drive queue; the probe now refuses rather than sweeping the unit table, which hung
@@ -229,7 +236,7 @@ exercised, and the most likely thing to break under a real game, because the pum
 drive's block size to 2352 for the whole of playback while the File Manager expects 512. That
 race is documented in `cd_pump_audio.c` and has never been resolved.
 
-`CDPlayProbe_v11` phase D hunts the **silent** version of that failure, not just errors:
+`CDPlayProbe_v12` phase D hunts the **silent** version of that failure, not just errors:
 
 1. finds the CD's data volume and the largest file in its root;
 2. reads a 32 KB chunk with **nothing playing** and keeps a checksum;
@@ -291,7 +298,7 @@ in the first draft of this paragraph.)
 
 ### 4. ✅ HANDED OFF — repo public 2026-08-07, forum post made by the user
 `github.com/UnexpectedBomb/MacOS9-CD-Audio-Redirector` is public under MIT, `dist/` carries
-`CDAudioRedirector_v9` and `CDPlayProbe_v11`, and the user posted to macos9lives themselves.
+`CDAudioRedirector_v10` and `CDPlayProbe_v12`, and the user posted to macos9lives themselves.
 
 **Now waiting on Jubadub.** Two branches from here:
 
