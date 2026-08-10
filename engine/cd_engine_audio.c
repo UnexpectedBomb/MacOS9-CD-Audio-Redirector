@@ -1,6 +1,23 @@
 /*
  * cd_engine_audio.c — Step 5a: the audio engine, inside the resident PowerPC engine.
  *
+ * ⛔ RETIRED. THIS FILE IS NOT BUILT. Nothing references it, including
+ * engine/CMakeLists.txt. The design it describes — doing the audio inside the
+ * resident engine, from within the patched Control entry — was killed on hardware
+ * by the deadlock: you cannot do synchronous driver I/O from inside that driver's
+ * own Control entry, because the read cannot start until the Control call returns
+ * and the call is waiting on the read. `accRun` is no escape, being a Control call
+ * itself. That is why the pump application exists, and the shipping path is
+ * engine/cd_pump_audio.c.
+ *
+ * Kept for the same reason the 68K generation in patch/ is kept: it records what
+ * was tried and why it could not work. Read it as history, not as a component.
+ * ⚠ If any of it is ever revived, note that it carries its OWN copy of the TOC
+ * parse, separate from the one in probes/common/cd_probe_common.c that everything
+ * shipping uses. That copy had the control-nibble bug for the same reason the real
+ * one did; it has been corrected in place so this file cannot reintroduce it, but a
+ * second parser is a second thing to get wrong.
+ *
  * This is the payload the whole project has been building towards: when a game issues
  * the legacy `AudioPlay`, read the CD-DA sectors ourselves and play them through the
  * Sound Manager, so the music is audible on a Mac with no analog CD-audio wire.
@@ -206,7 +223,11 @@ static void ReadTOC(void)
             gInSelfCall = false;
             for (k = 0; k < n; k++) {
                 unsigned char *e = tb + 4 * k;
-                short ctrl = (e[0] >> 4) & 0x0F;
+                /* Control is the LOW nibble; ADR is the high one. Reading the high
+                   nibble here called a data track AUDIO, which is the bug Jubadub's
+                   Warcraft disc found. Corrected to match CDReadTOC in
+                   cd_probe_common.c, which is the parser that actually ships. */
+                short ctrl = e[0] & 0x0F;
                 gTOC.t[k].number = gTOC.firstTrack + k;
                 gTOC.t[k].isData = (ctrl & 0x04) != 0;
                 gTOC.t[k].lba    = ((long)kBCDToBin(e[1]) * 60 + kBCDToBin(e[2]))

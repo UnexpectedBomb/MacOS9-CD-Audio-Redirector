@@ -57,6 +57,17 @@ mixed-mode disc to answer and this machine does not have one.
 Also worth doing: tell Jubadub the bug he found is fixed, and ask him to retest with v10. He is
 already set up, and his disc is a second machine and a second copy of the game.
 
+**Decision 2026-08-10: that reply is deliberately held** until v10 has been run against a
+mixed-mode disc here. The choice is between telling him "fixed, untested" and telling him
+"fixed and verified", and his last run cost him a boot to produce a report we could only
+partly act on. His post reporting the buzzing is still the newest in topic 7829, so nothing is
+lost by waiting for the disc; what would be lost is a second unverified round trip.
+
+**Also settled 2026-08-10, while waiting:** `engine/cd_engine_audio.c` carried its own copy of
+the TOC parse with the *same* high-nibble bug. It is dead code (referenced by nothing, not even
+its own CMakeLists) so the shipping path was never affected, but it sat in a public repository
+as a working copy of the bug. Corrected in place and the file is now clearly marked retired.
+
 ## Where this stands
 
 On the G4 mini, with a pressed audio CD: a legacy `AudioPlay` — the call a mixed-mode game
@@ -364,9 +375,17 @@ ask every time. No em-dashes in anything published externally.
 - **A build script that hardcodes the artifact version will silently ship a stale binary.**
   the staging script had `BASES="CDPump_v3"` hardcoded; when the target became v4 it
   re-pushed the v3 still sitting in the build directory and printed a success line. It now
-  takes the name from CMake and fails loudly if nothing was copied. **The four probe push
-  scripts still hardcode their names** — latent, since those versions have not moved, but the
-  same trap is armed. Fix them when any of those artifacts next changes version.
+  takes the name from CMake and fails loudly if nothing was copied.
+  ✅ **Closed everywhere, 2026-08-10.** The four probe `push-to-pi.sh` scripts this used to warn
+  about no longer exist — publication hygiene replaced all eight with one
+  `scripts/stage-artifacts.sh`, so that warning had gone stale. The last live instance was
+  **`scripts/publish-dist.sh`**, which still named `_v10` and `_v12` literally and publishes
+  into the **public** `dist/`. Worse than the original: a version bump leaves the old binary in
+  the build directory, so the hardcoded name still resolves and the stale artifact would be
+  scrubbed, verified and published with a success line. It now derives both names from
+  `add_application(...)` in the CMakeLists, refuses on zero or several matches (all three
+  refusal paths tested), and points out stale siblings in the build directory and superseded
+  pairs left in `dist/`. Re-run over the current tree reproduces `dist/` byte for byte.
 
 ## Numbers worth knowing
 
