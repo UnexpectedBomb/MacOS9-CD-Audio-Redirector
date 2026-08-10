@@ -32,10 +32,21 @@ set -eu
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 cd "${ROOT}"
 
-# token -> replacement, and they MUST be the same length
-SCRUB_FROM="chrissell"
-SCRUB_TO="builduser"
+# The token to remove is the BUILD USER'S OWN ACCOUNT NAME, taken from the system
+# rather than written down. Spelling it out here would have put the very string
+# this script exists to remove into the published repository, which is exactly the
+# leak, one level up. Override with CD_SCRUB_TOKEN if the toolchain was built by a
+# different account than the one running this.
+SCRUB_FROM="${CD_SCRUB_TOKEN:-$(id -un)}"
 
+# The replacement must be EXACTLY as long, so nothing in the file moves. Pad or
+# truncate a neutral word to match, whatever length the account name happens to be.
+SCRUB_TO="$(printf '%s' "builduserbuilduserbuilduserbuilduser" | cut -c1-${#SCRUB_FROM})"
+
+if [ -z "${SCRUB_FROM}" ] || [ ${#SCRUB_FROM} -lt 3 ]; then
+    echo "publish-dist: implausible scrub token '${SCRUB_FROM}', refusing" >&2
+    exit 1
+fi
 if [ ${#SCRUB_FROM} -ne ${#SCRUB_TO} ]; then
     echo "publish-dist: substitution changes length, refusing" >&2
     exit 1
