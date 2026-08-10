@@ -2798,3 +2798,100 @@ It does not need a hardware run of its own; fold it into whatever comes next.
 Engine block version **5** — the layout is identical to 4, but the first counter changed
 meaning, and a reader built for 4 would report the old one. Set: `CDAudioRedirector_v9`,
 `CDPump_v13`, `CDPlayProbe_v10`, `CDTraceRead_v5`.
+
+# Run 2026-08-07m: JUBADUB'S WARCRAFT DISC — and the bug that had been invisible all along
+
+The first real mixed-mode game disc ever put in front of this code, on someone else's machine,
+found a defect in the second thing it did. Logs in `logs/2026-08-07-jubadub-warcraft/`.
+
+Jubadub ran `CDAudioRedirector_v9` + `CDPlayProbe_v11` against **Warcraft: Orcs & Humans**, and
+diagnosed it himself before we did:
+
+> "Track 1 is just normal computer data, and not redbook audio, so it'd check out"
+
+He was right, and our tool said the opposite.
+
+## The bug: we read the wrong nibble of the TOC control field
+
+```
+toc +0000: 04 00 02 00 | 00 29 43 25 | 00 30 30 69 | ...
+             ^^
+```
+
+Each TOC entry is `[ctrl/adr][M][S][F]`. MMC puts **ADR in bits 7..4 and CONTROL in bits 3..0**,
+and control bit 2 means *data track*. Track 1's byte is **0x04**: ADR 0, control 4, data.
+
+`cd_probe_common.c` read `(e[0] >> 4) & 0x0F` — the **high** nibble. For track 1 that yields 0,
+so it reported the data track as AUDIO.
+
+| | we said | truth |
+|---|---|---|
+| track 1 | AUDIO, lba 0 | **DATA**, 133600 sectors = 261 MB |
+| tracks 2-8 | AUDIO | AUDIO (47 s, 251 s, 226 s, 222 s, 229 s, 218 s) |
+| total | 8 audio | **7 audio** |
+
+## Why every single test we ever ran passed anyway
+
+**On an all-audio disc every descriptor byte is `0x00`, so both nibbles read as zero and the
+two parses are indistinguishable.** Every disc used in development was all-audio. The bug was
+perfectly invisible for the entire project and would have been invisible forever, because the
+only disc that can expose it is the exact kind the project exists to support.
+
+That is worth stating plainly: **fifteen builds and around thirty hardware runs, and the
+canonical case was broken in a way none of them could see.** No amount of further testing on
+the discs we had would have found it.
+
+## What it caused, end to end
+
+1. The probe scanned for "the first audio track" and picked **track 1**, the data track.
+2. It issued `AudioTrackSearch` and `AudioPlay` at track 1 in all eight encodings. The driver
+   refused **every one** with `paramErr` — correctly, because you cannot play audio from a data
+   track. The probe concluded "H2 INDICATED: the driver refused AudioPlay in every encoding",
+   which was a real refusal with an entirely wrong explanation.
+3. The pump serviced each of those refused requests anyway (that is by design; it takes the
+   work before the driver forms an opinion) and **streamed 261 MB of Warcraft's program code
+   to the speakers as 16-bit PCM.**
+
+Jubadub reported "buzzing sounds". That is exactly what executable code sounds like at
+44.1 kHz. He then clicked both "I heard music" and "it was silent" on separate runs, which is
+why the two logs disagree, and neither answer meant anything.
+
+His other observation, "the CD did not even spin", also fits: `AudioPlay` was refused, so the
+drive never began a transport operation. Our pump was reading sectors, not playing them.
+
+## Three fixes
+
+**1. Parse the control field correctly** (`cd_probe_common.c`). Low nibble. The raw byte is now
+logged for every track, so a drive that disagrees is diagnosable instead of silently misread:
+
+```
+track  1: raw=0x04 ctrl=0x4 DATA   00:02:00  lba=0
+```
+
+**2. The pump refuses to stream a data track** (`cd_pump_audio.c`). With the parse fixed this
+should be unreachable, which is exactly why it is worth having: it is cheap, it protects
+someone's ears and speakers from full-scale noise, and if a future disc confuses the parse
+again the log says so instead of the speakers. It counts as a `playResolveFails`.
+
+**3. The request ring grows 16 → 64.** Jubadub's run overflowed it twice and lost four
+requests, because the probe's encoding-discovery loop fires eight `AudioTrackSearch` and eight
+`AudioPlay` attempts back to back when all of them are refused. Growing the ring used to be
+dangerous, since block size is what froze the machine — but the ring is separately allocated
+now, so **the published block stays at 160 bytes** whatever this is set to, and total heap
+consumption was proven not to be the trigger. Verified: `sizeof(CDEnginePublic)` is still 160.
+
+## What this run also settled, for free
+
+- **A mixed-mode disc mounts TWO volumes on the CD driver** (`drive=4` and `drive=7`, both
+  `refNum=-67`). That was Phase 0's open P3 question, unanswered since the beginning.
+- **`ReadAudioVolume` (csCode 112) returns −18 on this drive**, so the probe's "prove the volume
+  was not zero" step cannot work here. Not important now, but it was an assumption.
+- The extension itself was **flawless**: patched cleanly, 1 MB of system heap free, published,
+  survived, no freeze, no crash, and every counter we added reported the situation accurately.
+  `refusals serviced: 16` and `unresolvable plays: 0` were both exactly right.
+
+New artifacts: `CDAudioRedirector_v10`, `CDPump_v14`, `CDPlayProbe_v12`, `CDRecon_v2` rebuilt.
+
+**Jubadub found this, on his own disc, in one run.** Every remaining unknown in this project
+was about what a real game would do, and the first contact with one was worth more than the
+whole synthetic test programme.

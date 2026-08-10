@@ -75,7 +75,7 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v11"
+#define kVersionString  "CDPlayProbe v12"
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */

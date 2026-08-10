@@ -718,7 +718,26 @@ void CDReadTOC(short refNum, CDTOC *toc)
             CDLogHex("toc", tocBuf, 4 * n);
             for (t = 0; t < n; t++) {
                 unsigned char *e = tocBuf + 4 * t;
-                int  ctrl = (e[0] >> 4) & 0x0F;
+                /* ★ CONTROL IS THE LOW NIBBLE. This read the HIGH one until
+                 * 2026-08-07, and the difference is the whole project.
+                 *
+                 * Every disc tested here was all-audio, where every descriptor byte
+                 * is 0x00 and both nibbles read as zero, so the mistake was perfectly
+                 * invisible for the entire development. The first real mixed-mode game
+                 * disc exposed it immediately: Warcraft's track 1 has byte 0x04, which
+                 * is ADR 0 in the high nibble and CONTROL 4 in the low one, and control
+                 * bit 2 means DATA TRACK.
+                 *
+                 * Reading the high nibble called that data track AUDIO. The probe then
+                 * picked it as the track to play, the driver refused every AudioPlay
+                 * because you cannot play audio from a data track, and the pump
+                 * cheerfully streamed 261 MB of program code to the speakers as
+                 * 16-bit PCM. The tester heard buzzing, which is exactly right.
+                 *
+                 * MMC has it as ADR in bits 7..4, CONTROL in bits 3..0. The raw byte is
+                 * logged below so any drive that disagrees is diagnosable rather than
+                 * silently mis-parsed the way this was. */
+                int  ctrl = e[0] & 0x0F;
                 /* control field bit 2 set ⇒ data track, clear ⇒ audio */
                 Boolean isData = (ctrl & 0x04) != 0;
 
@@ -734,8 +753,9 @@ void CDReadTOC(short refNum, CDTOC *toc)
                 toc->trackCount++;
                 if (!isData) toc->audioCount++;
 
-                CDLogf("    track %2d: ctrl=0x%X %s  %02d:%02d:%02d  lba=%ld",
-                       toc->track[t].number, ctrl, isData ? "DATA " : "AUDIO",
+                CDLogf("    track %2d: raw=0x%02X ctrl=0x%X %s  %02d:%02d:%02d  lba=%ld",
+                       toc->track[t].number, e[0], ctrl,
+                       isData ? "DATA " : "AUDIO",
                        toc->track[t].m, toc->track[t].s, toc->track[t].f,
                        toc->track[t].lba);
             }

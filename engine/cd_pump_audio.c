@@ -481,13 +481,37 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     gTrackStartLBA = a;
     {
         short i;
+        Boolean startsInData = false;
+
         for (i = 0; i < gTOC.trackCount; i++) {
             if (gTOC.track[i].lba <= a &&
                 (i + 1 >= gTOC.trackCount || gTOC.track[i + 1].lba > a)) {
                 gCurTrack      = gTOC.track[i].number;
                 gTrackStartLBA = gTOC.track[i].lba;
+                startsInData   = gTOC.track[i].isData;
                 break;
             }
+        }
+
+        /* ★ NEVER STREAM A DATA TRACK TO THE SPEAKERS.
+         *
+         * Until 2026-08-07 nothing stopped this, because the TOC parser could not
+         * tell a data track from an audio one (it read the wrong nibble of the
+         * control field). On Warcraft's disc the pump therefore played 261 MB of
+         * program code as 16-bit PCM, and the tester heard buzzing.
+         *
+         * Now that data tracks are identified correctly this should be unreachable,
+         * which is exactly why it is worth having: it is cheap, it protects someone's
+         * ears and speakers from full-scale noise, and if a future disc or drive
+         * confuses the parse again the log says so instead of the speakers. */
+        if (startsInData) {
+            CDLogf("  !! REFUSING TO PLAY: LBA %ld is inside track %d, which is a DATA "
+                   "track. Streaming it would be full-scale noise, not music.",
+                   a, gCurTrack);
+            CDLogf("     A game asking for audio here means either the disc's TOC is "
+                   "being misread, or the game asked for something impossible.");
+            if (gPub != NULL) gPub->playResolveFails++;
+            return paramErr;
         }
     }
     CDLogf("  pump: inside track %d (starts at LBA %ld)", gCurTrack, gTrackStartLBA);

@@ -235,7 +235,19 @@ typedef struct {
  *    1 entry   -> 156 bytes   effectively v1's footprint, for finding the threshold
  */
 #ifndef kEngineReqRingEntries
-#define kEngineReqRingEntries   16
+/* ★ 64 since 2026-08-07, and it costs the published block nothing.
+ *
+ * Jubadub's run overflowed 16 and lost requests, twice. The cause was the probe's
+ * encoding-discovery loop firing eight AudioTrackSearch attempts and eight AudioPlay
+ * attempts back to back when every one of them was refused, which is more than 16
+ * arrivals inside a single pump pass.
+ *
+ * Growing this used to be dangerous: while the ring lived INSIDE CDEnginePublic, more
+ * entries meant a bigger block, and block size is what froze the machine. Now that the
+ * ring is separately allocated (CD_RING_SEPARATE) the block holds a pointer and stays
+ * at 160 bytes whatever this is set to, and total heap consumption was proven not to
+ * be the trigger. So the headroom is free. */
+#define kEngineReqRingEntries   64
 #endif
 
 /* ★ BISECT SWITCH — separates the two things that changed together in v2.
