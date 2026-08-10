@@ -34,6 +34,29 @@ window; it does not close it. Three requests inside one pump pass would still lo
 only a candidate if it can be shown to make the loss impossible for the call patterns a real
 game issues, or if it carries a counter that makes any loss visible.
 
+## ⏸ PAUSED 2026-08-07, waiting on a disc
+
+Work stopped deliberately here. A **Warcraft: Orcs & Humans** disc was bought and is in the
+post; there is nothing worth doing until it arrives, because every remaining question needs a
+mixed-mode disc to answer and this machine does not have one.
+
+**Pick up here:**
+
+1. Disc arrives. Check it in a modern Mac: the Finder should mount a data volume **while** the
+   Music app shows audio tracks.
+2. On the mini, run **`CDRecon_v2`** and confirm the log now says
+   `track 1: raw=0x04 ctrl=0x4 DATA`. That single line re-verifies the TOC fix on real media
+   before anything else is attempted.
+3. Then the full run: delete both logs, `CDAudioRedirector_v10` in Startup Items, reboot with
+   the tray empty, insert the disc, wait for it to mount, run **`CDPlayProbe_v12`** three times.
+   Phases A to C should behave as they did on an audio CD but targeting **track 2**, and
+   **phase D** finally gets a data track to contend with.
+4. Then launch Warcraft itself and send the log. The pump records every serviced request with
+   its parameters, so that captures the game's real call pattern.
+
+Also worth doing: tell Jubadub the bug he found is fixed, and ask him to retest with v10. He is
+already set up, and his disc is a second machine and a second copy of the game.
+
 ## Where this stands
 
 On the G4 mini, with a pressed audio CD: a legacy `AudioPlay` — the call a mixed-mode game

@@ -4,20 +4,26 @@ Brings back the **Red Book CD music** in early Mac CD games, on Macs whose CD dr
 analog audio path to the sound hardware. One file, dropped into Startup Items. Nothing
 permanent is changed.
 
-> ### Status: it works on hardware, and it has never met a real game
+> ### Status: works on an audio CD, and the first real game disc found a bug
 >
 > On a G4 Mac mini with no analog CD-audio wire, the exact call a mixed-mode game makes
-> (`AudioPlay`) now produces **audible music**, with a truthful advancing position and a proper
+> (`AudioPlay`) produces **audible music**, with a truthful advancing position and a proper
 > end-of-track. That is verified over many runs, with the numbers checking out to the exact CD
 > frame.
 >
-> **But every one of those runs used an ordinary audio CD, driven by a test program.** A real
-> mixed-mode game disc, where track 1 is data and the game reads levels off it while the music
-> plays, has **never been tried**. That is exactly the case this was built for, and it is the
-> one thing that cannot be tested here.
+> **Then a tester ran it against a real mixed-mode game disc, and it found a defect in the
+> second thing it did.** The table-of-contents parser read the wrong half of the track type
+> field, so it called the disc's 261 MB *data* track an audio track and tried to play it. On an
+> ordinary audio CD that field is zero either way, so roughly thirty hardware runs here could
+> never have caught it. One run on the right disc did, immediately.
 >
-> **If you have such a disc, you are the person this needs.** See
-> [What to report back](#what-to-report-back).
+> **That is fixed in v10** (which also refuses to stream a data track, and enlarges a queue the
+> tester overflowed). But v10 fixes a bug found on a mixed-mode disc without yet having been
+> **run** on one.
+>
+> **If you have a mixed-mode game disc, you are still the person this needs.** See
+> [What to report back](#what-to-report-back). Thanks to Jubadub on MacOS9Lives, who ran it,
+> and who worked out what was wrong before we did.
 
 ---
 
@@ -103,13 +109,17 @@ Worth being precise, because this patches a driver:
 
 Being straight about this, because it is the whole reason for asking testers:
 
-1. **A real mixed-mode game disc.** Every test so far used a plain audio CD. On a game disc,
-   track 1 is data, and the game reads level data from it **while** music is playing. That
-   contention has never been exercised.
-2. **Any actual game.** A test program has stood in for one throughout. Real games may issue
+1. **This build on a mixed-mode game disc.** One such disc has now been tried, and it found the
+   parsing bug described above. The fix is in v10, but v10 itself has not yet been run against
+   a mixed-mode disc.
+2. **Data and audio at the same time.** On a game disc the game reads level data off track 1
+   **while** music plays from the tracks after it. That contention has still never been
+   exercised. `CDPlayProbe_v12` has a phase D that hunts it specifically, including the silent
+   version where reads return the wrong bytes rather than an error.
+3. **Any actual game.** A test program has stood in for one throughout. Real games may issue
    the calls in orders that have not come up.
-3. **Any machine other than a G4 Mac mini.**
-4. One internal detail is understood but not explained: the extension has to keep one of its
+4. **Any machine other than a G4 Mac mini.**
+5. One internal detail is understood but not explained: the extension has to keep one of its
    memory blocks small, or the machine freezes during playback. Keeping it small is proven over
    many runs, but the underlying reason is still unknown. It is written up in
    [FINDINGS.md](FINDINGS.md) under 2026-08-07g in case it ever matters.
