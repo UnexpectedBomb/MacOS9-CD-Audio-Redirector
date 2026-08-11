@@ -34,7 +34,54 @@ window; it does not close it. Three requests inside one pump pass would still lo
 only a candidate if it can be shown to make the loss impossible for the call patterns a real
 game issues, or if it carries a counter that makes any loss visible.
 
-## ⏸ PAUSED 2026-08-07, waiting on a disc
+## ★★★ 2026-08-11 — THE POSITION ENCODING WAS WRONG, AND BOTH HALVES AGREED ON IT
+
+Read this before anything else below; it invalidates several older conclusions.
+
+Jubadub ran v10 against Warcraft and reported silence, with the buzzing gone. His log showed
+perfect machinery: correct TOC (`track 1: raw=0x04 ctrl=0x4 DATA`, 7 audio tracks), resolution
+to `inside track 2`, 18 of 18 requests serviced, 0 dropped, 0 unresolvable, full 352800-byte
+pre-rolls and `SndPlayDoubleBuffer err=0` sixteen times.
+
+`.AppleCD` v1.4.0 was carved out of the 9.2.2 install ISO's `Apple_Driver_ATAPI` partition and
+disassembled: Control dispatch at `+0xb4e8`, AudioPlay at `+0x9528`, shared play path `+0x915c`,
+address parser `+0x9876`. **The position type is a WORD at `csParam+0`** — 0 means a 32-bit block
+at `csParam+2`, 1 means BCD MSF at `csParam+3,+4,+5`, 2 means a BCD track number at `csParam+5`,
+and anything else is an instant `paramErr`. We wrote the type as a **byte**, so we sent 0x0100,
+0x0200, 0x0300 (all invalid) or type 0 with the MSF read as a block number near 691,000,000.
+
+Two older conclusions die here:
+
+- **"Every audio call returns noErr and the drive never moves — accepted and ignored"** (Phase 0,
+  and quoted ever since) was measured with an address the driver could not use. The type-0 path
+  has no bounds check, so it accepted nonsense and the drive did nothing. It says nothing about
+  whether this driver supports audio.
+- **The paramErr exposure in step 5 was largely our own probe.** A real game encodes correctly,
+  so it would take the type-1 or type-2 path rather than being refused outright.
+
+**Why a real game got silence, precisely.** `DecodePos` read MSF from `cp[2..4]` and a track from
+`cp[2]`, never looking at the type — and `CDPlayProbe` wrote that same wrong layout, so the two
+agreed and thirty-odd hardware runs proved only that they agreed. Warcraft asks for track 2 as
+MSF 29:43:25, putting `0x29,0x43,0x25` at `cp[3..5]`; the old sniffer read m=0, s=29, f=43,
+passed its own plausibility check, and resolved **LBA 2068, inside the 261 MB data track**. v10's
+DATA guard then correctly refused to stream it. Silence, no error, every counter zero.
+
+★ Same blind spot as the TOC nibble: **a field the test data never exercised**. The probe was not
+an independent check on the pump, because both were written from the same wrong assumption.
+
+**Fixed in `CDAudioRedirector_v11` / `CDPump_v15` / `CDPlayProbe_v13` / `CDTraceRead_v6`, engine
+version 6.** Decoding is strictly by position type and refuses rather than guesses on an unknown
+one (`posTypeUnknown`, because the disassembly is v1.4.0 while the mini runs v1.4.8). A repeat
+`AudioPlay` for the range already playing now continues rather than restarting with a fresh
+one-second pre-roll — sixteen restarts across 21.8 s is what made his run inaudible, and a game
+that retries after an error does the same thing (`playsCoalesced`). The probe sends the correct
+layout, makes 2 attempts rather than 8, and no longer stops polling when the driver refuses.
+
+⚠ **None of this has run on hardware.** `dist/` is deliberately still at v10 for that reason.
+⚠ The published block grows 160 → 168 bytes: two counters. Inside the proven envelope (188 was
+clean over 3 runs, 468 froze), but confirm `structBytes=168` in the run's build-config line.
+
+## ⏸ (superseded by the above) PAUSED 2026-08-07, waiting on a disc
 
 Work stopped deliberately here. A **Warcraft: Orcs & Humans** disc was bought and is in the
 post; there is nothing worth doing until it arrives, because every remaining question needs a
@@ -47,8 +94,8 @@ mixed-mode disc to answer and this machine does not have one.
 2. On the mini, run **`CDRecon_v2`** and confirm the log now says
    `track 1: raw=0x04 ctrl=0x4 DATA`. That single line re-verifies the TOC fix on real media
    before anything else is attempted.
-3. Then the full run: delete both logs, `CDAudioRedirector_v10` in Startup Items, reboot with
-   the tray empty, insert the disc, wait for it to mount, run **`CDPlayProbe_v12`** three times.
+3. Then the full run: delete both logs, `CDAudioRedirector_v11` in Startup Items, reboot with
+   the tray empty, insert the disc, wait for it to mount, run **`CDPlayProbe_v13`** three times.
    Phases A to C should behave as they did on an audio CD but targeting **track 2**, and
    **phase D** finally gets a data track to contend with.
 4. Then launch Warcraft itself and send the log. The pump records every serviced request with
@@ -102,10 +149,10 @@ binary announces itself rather than misreporting. The matching set:
 
 | Artifact | What it is |
 |---|---|
-| **`CDAudioRedirector_v10`** | ★ **The current build.** Faceless, 64 request slots, ring in its own allocation (block 160 B). No freeze, nothing dropped |
-| **`CDPump_v14`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
-| **`CDPlayProbe_v12`** | Stands in for a game. Four phases: A track start, **B track switch**, **C natural end of track**, **D data reads DURING playback**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
-| **`CDTraceRead_v5`** | Reads the engine's trace ring via `Gestalt('CDau')` |
+| **`CDAudioRedirector_v11`** | ★ **The current build** (UNRUN on hardware). Faceless, 64 request slots, ring in its own allocation (block 168 B). No freeze, nothing dropped |
+| **`CDPump_v15`** | Diagnostic build of the same source: window, option to patch, click to stop. Log: `CD Engine Log` |
+| **`CDPlayProbe_v13`** | Stands in for a game. Four phases: A track start, **B track switch**, **C natural end of track**, **D data reads DURING playback**. Reports the pump's published state under every poll. Sweep is opt-in (option); refuses to run with no disc |
+| **`CDTraceRead_v6`** | Reads the engine's trace ring via `Gestalt('CDau')` |
 | `CDRecon_v2` | Phase-0 recon: driver identity, TOC, DAE gate, mounted volumes |
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
 | `CDAudioSpike_v1` | The standalone Phase-1 DAE → Sound Manager spike |
@@ -123,7 +170,7 @@ compiled constants. The current one says
 
 ## How to run it
 
-**`CDAudioRedirector_v10` is the build to run.** It meets the ship gate's two mechanical
+**`CDAudioRedirector_v11` is the build to run.** It meets the ship gate's two mechanical
 requirements — it does not freeze and it drops nothing — but it is not validated for release;
 see the remaining work below.
 
@@ -136,14 +183,14 @@ and "read from the last banner" has already pointed at the wrong session once.
 1. Put it in `System Folder:Startup Items:`, removing any earlier copy. Reboot **with the
    drive empty** — that is the real installed configuration.
 2. Insert an audio CD.
-3. Run **`CDPlayProbe_v12`**. Expect music, `the CD Audio Redirector IS resident`, and a
+3. Run **`CDPlayProbe_v13`**. Expect music, `the CD Audio Redirector IS resident`, and a
    `pump: beat=… reqR=… reqW=…` line under every poll.
 4. Evidence is `CD Play Probe Log` — the pump's own log has gone silent before and cannot be
    relied on as the only channel.
 
-**The diagnostic build** (`CDPump_v14`), when you want the window and manual control:
+**The diagnostic build** (`CDPump_v15`), when you want the window and manual control:
 reboot with the drive empty, launch it **holding option**, leave it open, insert the disc, run
-`CDPlayProbe_v12`, then click the pump window to stop. `CDTraceRead_v5` shows the trace.
+`CDPlayProbe_v13`, then click the pump window to stop. `CDTraceRead_v6` shows the trace.
 
 ⚠ **Always confirm the disc has mounted before launching the probe.** With no disc there is no
 CD in the drive queue; the probe now refuses rather than sweeping the unit table, which hung
