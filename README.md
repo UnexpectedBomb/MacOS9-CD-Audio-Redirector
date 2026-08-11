@@ -4,26 +4,37 @@ Brings back the **Red Book CD music** in early Mac CD games, on Macs whose CD dr
 analog audio path to the sound hardware. One file, dropped into Startup Items. Nothing
 permanent is changed.
 
-> ### Status: works on an audio CD, and the first real game disc found a bug
+> ### ⚠ Status: works on an audio CD. **v10, the version below, does NOT work with a real game.**
 >
 > On a G4 Mac mini with no analog CD-audio wire, the exact call a mixed-mode game makes
 > (`AudioPlay`) produces **audible music**, with a truthful advancing position and a proper
 > end-of-track. That is verified over many runs, with the numbers checking out to the exact CD
-> frame.
+> frame. But every one of those runs used a plain **audio CD**, and drove it with our own test
+> program rather than a game.
 >
-> **Then a tester ran it against a real mixed-mode game disc, and it found a defect in the
-> second thing it did.** The table-of-contents parser read the wrong half of the track type
-> field, so it called the disc's 261 MB *data* track an audio track and tried to play it. On an
-> ordinary audio CD that field is zero either way, so roughly thirty hardware runs here could
-> never have caught it. One run on the right disc did, immediately.
+> **Against a real mixed-mode game disc it does not work, and we now know exactly why.** Two
+> separate defects have been found this way, both by the same tester, both invisible to any test
+> we could run here:
 >
-> **That is fixed in v10** (which also refuses to stream a data track, and enlarges a queue the
-> tester overflowed). But v10 fixes a bug found on a mixed-mode disc without yet having been
-> **run** on one.
+> 1. The table-of-contents parser read the wrong half of the track type field, so it called the
+>    disc's 261 MB *data* track an audio track and streamed it to the speakers. On an ordinary
+>    audio CD that field is zero either way. Fixed in v10.
+> 2. **The audio position encoding was wrong**, and our test program had the same error, so the
+>    two agreed with each other and roughly thirty hardware runs confirmed nothing. A game asks
+>    for a track in a form v10 mis-reads, which lands inside the data track, and v10 then
+>    correctly refuses to play it. **The result is silence, with no error reported anywhere.**
 >
-> **If you have a mixed-mode game disc, you are still the person this needs.** See
-> [What to report back](#what-to-report-back). Thanks to Jubadub on MacOS9Lives, who ran it,
-> and who worked out what was wrong before we did.
+> The second one was found by disassembling Apple's own `.AppleCD` driver, and the fix is
+> written and built. **It is deliberately not published yet, because it has not been run on real
+> hardware.** A disc to do that with is on its way here.
+>
+> **So: on an audio CD this works. On the mixed-mode game discs it was written for, v10 will be
+> silent.** If that is your case, it is worth waiting for the next release rather than
+> installing this one.
+>
+> Thanks to Jubadub on MacOS9Lives, who ran it twice, sent the logs that made both diagnoses
+> possible, and worked out the first fault before we did. **Testing this is our job, not a
+> tester's**, and the next version will be posted once it has been proven here.
 
 ---
 
@@ -53,6 +64,10 @@ You are a candidate if all of these are true:
 If your Mac still has the analog wire, you do not need this and should not install it.
 
 ## Install
+
+⚠ **Read the status note at the top first.** The build in `dist/` is v10, which works on a plain
+audio CD but is **silent with a real mixed-mode game disc**. If a game is why you are here, wait
+for the next release.
 
 1. Copy **`CDAudioRedirector_v10`** onto the OS 9 machine. In [dist/](dist/) there is a
    MacBinary `.bin` (easiest to transfer, decode with StuffIt Expander) and a disk image
@@ -107,11 +122,13 @@ Worth being precise, because this patches a driver:
 
 ## What is not tested yet
 
-Being straight about this, because it is the whole reason for asking testers:
+Being straight about this:
 
-1. **This build on a mixed-mode game disc.** One such disc has now been tried, and it found the
-   parsing bug described above. The fix is in v10, but v10 itself has not yet been run against
-   a mixed-mode disc.
+1. **This build on a mixed-mode game disc: it does not work.** Two such runs have now happened,
+   and each found a real defect. The first is fixed in v10. The second, the position encoding,
+   is **not** fixed in v10 and is why v10 is silent with a game. The fix exists but has not been
+   run on hardware, so it is not published. A disc to prove it with is on its way here, and
+   verifying it is our job rather than a tester's.
 2. **Data and audio at the same time.** On a game disc the game reads level data off track 1
    **while** music plays from the tracks after it. That contention has still never been
    exercised. `CDPlayProbe_v12` has a phase D that hunts it specifically, including the silent
@@ -126,7 +143,9 @@ Being straight about this, because it is the whole reason for asking testers:
 
 ## What to report back
 
-Whatever happens, the useful things are:
+Not a request to go and test v10 against a game: we already know what that does, and proving the
+fix is our job. This is here for anyone who runs it anyway, or who hits something unexpected on
+an audio CD. If you do, the useful things are:
 
 - **which Mac and which version of Mac OS 9**,
 - **which game and which disc**, and whether the music played,
