@@ -170,12 +170,34 @@ binary announces itself rather than misreporting. The matching set:
 | `CDCtlDump_v1` | Dumps the driver's Control entry (read-only) |
 | `CDAudioSpike_v1` | The standalone Phase-1 DAE → Sound Manager spike |
 | `CDAudioRedirector_bisectB` / `bisectC` | Inline-ring data points, 2 and 4 slots. Diagnostics that established the size threshold, **not** candidates — bisectB drops a request every run |
-| **`CDAudioRedirector_v1` + `CDPlayProbe_v3`** | ★ **The known-good control pair.** 4 runs, 0 freezes. Keep both on the share — this pair is what every regression gets measured against |
+| **`CDAudioRedirector_v1` + `CDPlayProbe_v3`** | ★ **The known-good control pair.** 4 runs, 0 freezes. Keep both on the share — this pair is what every regression gets measured against. **Restored to the share 2026-08-11**, see below |
 
 ⚠ Everything else is superseded: `CDAudioRedirector_v2`–`v9` and `bisectA`/`bisectD`,
 `CDPump_v3`–`v13`, `CDPlayProbe_v4`–`v11`, `CDTraceRead_v1`–`v4`. Readers built against an
 older engine version refuse rather than misreport, but the share has accumulated dozens of
 files: delete the old ones so the right file is the obvious one to pick.
+
+### The control pair, restored 2026-08-11 — and what it is not
+
+Both artifacts had fallen off the share. They are back, **rebuilt from commit `1ed6c2b`** ("Faceless
+artifact PASSES on hardware; found a request-dropping mailbox in the log"), which is the last commit
+where `CDAudioRedirector_v1` and `CDPlayProbe_v3` were both live targets. They are a matched set:
+that commit is **engine version 1**, so the pair agrees with itself and will version-refuse against
+anything current, which is exactly what a control should do.
+
+Verified after staging: each binary announces itself (`CD Audio Redirector v1`, `CDPlayProbe v3`)
+and contains none of the current work, checked by string search for today's additions.
+
+Three caveats, because a control that is quietly not the original is worse than no control:
+
+- **These are REBUILDS, not the binaries that produced the four clean runs.** Same commit, same
+  toolchain path, but the toolchain itself has not been pinned across that interval. If a control
+  run ever disagrees with the recorded history, suspect this before suspecting the machine.
+- **v1 predates the `build config:` line**, so it cannot self-identify from compiled constants the
+  way current builds do. Identify it by the banner `=== CD Audio Redirector v1` in
+  `CD Audio Redirector Log`, and nothing else.
+- The build also staged **`CDPump_v5`** (v1's diagnostic sibling, built by the same CMakeLists).
+  It is not part of the control pair and can be deleted from the share.
 
 **How to tell what you actually ran:** every build now logs its own configuration from the
 compiled constants. The current one says
