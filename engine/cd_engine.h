@@ -47,8 +47,10 @@
  * first counter changed MEANING — from "errors we overrode" to "refusals we merely
  * noted" — once the override proved impossible for queued calls. A reader built for 4
  * would report the old meaning against the new engine, so the version moves even though
- * no field did. Readers must check. */
-#define kEngineVersion  5
+ * no field did. Readers must check. 6 = posTypeUnknown and playsCoalesced appended,
+ * alongside the corrected position decoding — a version-5 reader would miss exactly the
+ * two counters that say whether that correction is holding. */
+#define kEngineVersion  6
 
 /* ★ WHICH refusals we NOTE — and why we no longer try to overrule them.
  *
@@ -436,6 +438,21 @@ typedef struct {
      * our fault or the driver's opinion. */
     volatile long   refusalsServiced;
     volatile long   playResolveFails;
+
+    /* ★ Encoding bookkeeping, added at engine version 6 (2026-08-11).
+     *
+     * `posTypeUnknown` counts play requests whose position type was not 0, 1 or 2.
+     * The layout the pump decodes was read out of .AppleCD v1.4.0's own parser while
+     * the mini runs v1.4.8, so this is the counter that says whether that contract
+     * actually holds on the machine in front of us. Non-zero means stop trusting it.
+     *
+     * `playsCoalesced` counts repeat plays for the range already playing that were
+     * allowed to continue instead of restarting. It should be LARGE in a probe run
+     * that hunts encodings and near zero under a real game; a big number under a game
+     * means the game is re-issuing Play far more often than expected, which is worth
+     * knowing before tuning anything else. */
+    volatile long   posTypeUnknown;
+    volatile long   playsCoalesced;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

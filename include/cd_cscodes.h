@@ -28,9 +28,36 @@
  *
  * Also verified: the ReadTOC action code works as a **word** at csParam+0
  * (`csParam[0] = action`); the byte-at-offset-0 alternative was never needed.
- * AudioPlay/AudioTrackSearch accept posType = 0 with the MSF form — though on this
- * driver "accept" means noErr without the drive ever moving, so that pins down
- * what it parses, not what it acts on.
+ *
+ * ★★★ THE AUDIO POSITION ENCODING, FROM THE DRIVER'S OWN CODE (2026-08-11)
+ * The earlier note here — "AudioPlay/AudioTrackSearch accept posType = 0 with the
+ * MSF form" — was WRONG, and it was wrong in a way that made everything downstream
+ * agree with it. Read `.AppleCD` v1.4.0's address parser (carved out of the 9.2.2
+ * install ISO's Apple_Driver_ATAPI partition, routine at +0x9876, reached from
+ * AudioPlay via +0x9528 → +0x915c) and the contract is:
+ *
+ *   csParam+0   POSITION TYPE, a **WORD**, not a byte:
+ *                 0 = absolute block address, a 32-bit LONG at csParam+2
+ *                 1 = MSF, three BCD bytes at csParam+3, +4, +5  (csParam+2 unused)
+ *                 2 = track number, one BCD byte at csParam+5, bounds-checked
+ *                     against the TOC's first and last track
+ *               anything else → the parser returns paramErr immediately.
+ *   csParam+6   word flag (hold for TrackSearch, stop-at for Play)
+ *
+ * WHY WE BELIEVED OTHERWISE FOR SO LONG: we wrote the type into the low BYTE at
+ * csParam+0, so the word the driver read was posType<<8 — 0x0100, 0x0200, 0x0300,
+ * all unrecognised — except for posType 0, which really is type 0 and made the
+ * driver read our M,S,F bytes as a 32-bit block number in the hundreds of millions.
+ * The type-0 path has no bounds check, so it returned noErr and the drive
+ * understandably did nothing. THAT is the true source of Phase 0's "accepted and
+ * ignored, the drive never moves" — it was never evidence about the driver's audio
+ * support, only about an address it could not use.
+ *
+ * ⚠ The disassembly is v1.4.0; the G4 mini runs v1.4.8. This contract is Apple's
+ * driver API rather than a build detail, and it predicts both branches seen in live
+ * logs (unknown types refused instantly, type 0 accepted-then-useless), but v1.4.8
+ * itself has not been read. If a request ever arrives with a type outside 0..2, the
+ * pump counts it rather than guessing — see `posTypeUnknown` in cd_engine.h.
  *
  * csParam layouts are byte offsets into CntrlParam.csParam (which C declares as
  * short csParam[11], i.e. 22 bytes). Where a field's width or encoding is
@@ -90,15 +117,26 @@
 /* These are the calls a mixed-mode game issues to play its music, and the whole
  * reason this project exists. ALL Control calls, verified on hardware.
  *
- * ★ On the G4 mini's .AppleCD 1.4.8, every one of these returns noErr and the
- * drive never moves: AudioTrackSearch does not seek, AudioPlay does not play, and
- * AudioStatus/ReadQ keep reporting a stale frozen position. Accepted and ignored.
- * So our interception cannot lean on the driver for playback position — the
- * extension must answer AudioStatus/ReadQ from its own playback cursor. */
-#define kcsAudioTrackSearch   103   /* +0 postype, +2 position, +6 hold, +9 mode */
-#define kcsAudioPlay          104   /* +0 postype, +2 position, +6 stop, +9 mode */
+ * ⚠ SUPERSEDED READING, KEPT SO IT IS NOT REDISCOVERED: "on the G4 mini's
+ * .AppleCD 1.4.8 every one of these returns noErr and the drive never moves —
+ * accepted and ignored." That was measured with the BROKEN position encoding
+ * described at the top of this file, so it says nothing about whether the driver
+ * supports audio. What it really showed is a type-0 block address of ~691 million
+ * being parsed without complaint and then being useless. Re-measure before quoting.
+ *
+ * Answering AudioStatus/ReadQ from our own cursor remains right regardless: on a
+ * machine with no analog CD-audio wire the drive's own transport cannot produce
+ * sound, so our cursor is the only truthful account of what the listener hears. */
+#define kcsAudioTrackSearch   103   /* +0 postype WORD, address per type, +6 hold */
+#define kcsAudioPlay          104   /* +0 postype WORD, address per type, +6 stop */
 #define kcsAudioPause         105   /* +0: 0 = resume, 1 = pause                 */
-#define kcsAudioStop          106   /* +0 postype, +2 position                   */
+#define kcsAudioStop          106   /* +0 postype WORD, address per type          */
+
+/* Position types for the audio calls above — the word at csParam+0. Taken from the
+ * driver's parser, not from documentation; see the block comment at the top. */
+#define kCDPosTypeBlock         0   /* 32-bit absolute block at csParam+2         */
+#define kCDPosTypeMSF           1   /* BCD M,S,F at csParam+3, +4, +5             */
+#define kCDPosTypeTrack         2   /* BCD track number at csParam+5              */
 #define kcsAudioStatus        107   /* Control (NOT Status). +3..5 = absolute     */
                                     /* M, S, F in BCD, matching ReadQ's. +0..2    */
                                     /* were 0x00 throughout; presumably play      */

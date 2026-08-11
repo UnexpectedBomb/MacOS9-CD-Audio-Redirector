@@ -122,22 +122,34 @@ static void SleepTicks(long ticks)
  *
  * The first combination that returns noErr wins and is logged; that answer goes
  * into cd_cscodes.h afterwards. */
-static OSErr TryAudioCall(short csCode, short posType, Boolean asMSF,
+/* The address form is NOT a free choice alongside the type — the type IS what says
+ * where the address lives. Passing them separately is how the old code came to send
+ * an MSF at a track offset; now the caller names the type and the layout follows. */
+static OSErr TryAudioCall(short csCode, short posType,
                           int m, int s, int f, int trackNum,
                           Boolean stopFlag, const char *label)
 {
     short param[11];
     unsigned char *b = (unsigned char *)param;
+    Boolean asMSF = (posType == kCDPosTypeMSF);
     OSErr err;
 
+    /* ★ The position type is a WORD at csParam+0, and the address's placement depends
+     * on it. This used to write the type into byte 0 and the address at +2 for both
+     * forms, so the word the driver saw was posType<<8: types 1, 2 and 3 became 0x0100,
+     * 0x0200 and 0x0300, all unrecognised and refused on the spot, while type 0 really
+     * is "absolute block" and made the driver read M,S,F as a block number in the
+     * hundreds of millions. Eight "encodings" were therefore one wrong one and three
+     * invalid ones. The contract now used is in cd_cscodes.h, read out of the driver. */
     memset(param, 0, sizeof(param));
-    b[0] = (unsigned char)posType;          /* +0: position type */
+    b[0] = 0;                               /* +0: position type, WORD */
+    b[1] = (unsigned char)posType;
     if (asMSF) {
-        b[2] = kBinToBCD(m);                /* +2..+4: M S F, BCD */
-        b[3] = kBinToBCD(s);
-        b[4] = kBinToBCD(f);
+        b[3] = kBinToBCD(m);                /* type 1: +3..+5 = M S F, BCD */
+        b[4] = kBinToBCD(s);
+        b[5] = kBinToBCD(f);
     } else {
-        b[2] = kBinToBCD(trackNum);         /* +2: track number, BCD */
+        b[5] = kBinToBCD(trackNum);         /* type 2: +5 = track number, BCD */
     }
     b[6] = stopFlag ? 1 : 0;                /* +6: stop/hold flag */
     b[9] = 0;                               /* +9: play mode, 0 = stereo */
@@ -610,10 +622,9 @@ static void RunProbe(void)
                (err == noErr) ? "" : "  <-- volume could not be set");
     }
 
-    /* --- AudioTrackSearch, then AudioPlay, across candidate encodings --- */
+    /* --- AudioTrackSearch, then AudioPlay, in the two forms that address a track --- */
     {
-        int   posType;
-        OSErr err = paramErr;
+        OSErr err;
         int   m = gP.toc.track[gP.audioTrackIdx].m;
         int   s = gP.toc.track[gP.audioTrackIdx].s;
         int   f = gP.toc.track[gP.audioTrackIdx].f;
@@ -622,48 +633,54 @@ static void RunProbe(void)
         gP.playPosType = -1;
         gP.playForm    = "none";
 
+        /* ★ TWO attempts, not eight. There are exactly three position types and only
+         * two of them address a track: MSF and track number. The old sweep of four
+         * "posType" values across two forms was a symptom of not knowing the contract,
+         * and on a disc where the driver refuses everything it fired eight AudioPlays
+         * inside a tenth of a second — which the pump serviced by restarting playback
+         * eight times, so nothing was ever audible. The probe must not be the reason
+         * the music does not play. */
         CDLogf("--- AudioTrackSearch (position to the track and hold) ---");
-        for (posType = 0; posType <= 3 && err != noErr; posType++)
-            err = TryAudioCall(kcsAudioTrackSearch, posType, true,
-                               m, s, f, trk, true, "TrackSearch/MSF");
+        err = TryAudioCall(kcsAudioTrackSearch, kCDPosTypeMSF,
+                           m, s, f, trk, true, "TrackSearch/MSF");
         if (err != noErr)
-            for (posType = 0; posType <= 3 && err != noErr; posType++)
-                err = TryAudioCall(kcsAudioTrackSearch, posType, false,
-                                   m, s, f, trk, true, "TrackSearch/track");
+            err = TryAudioCall(kcsAudioTrackSearch, kCDPosTypeTrack,
+                               m, s, f, trk, true, "TrackSearch/track");
         gP.trackSearchErr = err;
         CDLogf("  ⇒ AudioTrackSearch best err=%d", err);
 
         CDLogf("--- AudioPlay ---");
-        err = paramErr;
-        for (posType = 0; posType <= 3 && err != noErr; posType++) {
-            err = TryAudioCall(kcsAudioPlay, posType, true,
-                               m, s, f, trk, false, "AudioPlay/MSF");
-            if (err == noErr) { gP.playPosType = posType; gP.playForm = "MSF"; }
-        }
-        if (err != noErr) {
-            for (posType = 0; posType <= 3 && err != noErr; posType++) {
-                err = TryAudioCall(kcsAudioPlay, posType, false,
-                                   m, s, f, trk, false, "AudioPlay/track");
-                if (err == noErr) {
-                    gP.playPosType = posType;
-                    gP.playForm    = "track";
-                }
-            }
+        err = TryAudioCall(kcsAudioPlay, kCDPosTypeMSF,
+                           m, s, f, trk, false, "AudioPlay/MSF");
+        if (err == noErr) {
+            gP.playPosType = kCDPosTypeMSF; gP.playForm = "MSF";
+        } else {
+            err = TryAudioCall(kcsAudioPlay, kCDPosTypeTrack,
+                               m, s, f, trk, false, "AudioPlay/track");
+            if (err == noErr) { gP.playPosType = kCDPosTypeTrack; gP.playForm = "track"; }
         }
         gP.playErr = err;
         CDLogf("  ⇒ AudioPlay err=%d posType=%d form=%s",
                err, gP.playPosType, gP.playForm);
 
         if (err != noErr) {
-            CDLogf("  ⇒ H2 INDICATED: the driver refused AudioPlay in every "
-                   "encoding tried. The extension will have to emulate the audio "
-                   "surface convincingly, not merely add sound. (Check the "
-                   "per-attempt errors above: paramErr suggests a wrong "
-                   "encoding, controlErr suggests the csCode is unimplemented.)");
-            return;
+            /* ⚠ DO NOT RETURN HERE. This used to stop the run, and that is how three
+             * phase-C runs went unobserved and how a mixed-mode disc produced the
+             * verdict "playback was never accepted, so audibility says nothing" while
+             * the pump was in fact playing. With the redirector installed the driver's
+             * return code does not decide whether audio happens: the handler posts to
+             * the pump BEFORE it chains, so the pump has already taken the work when
+             * the driver forms its own opinion. Ask the pump, not the error. */
+            CDLogf("  ⇒ the driver refused AudioPlay in both addressing forms "
+                   "(paramErr = it did not like the address; controlErr = the csCode "
+                   "is unimplemented).");
+            CDLogf("  ⇒ POLLING ANYWAY. The pump may well be playing regardless — it "
+                   "is told about the request before the driver answers. The pump's "
+                   "own published state below is the evidence, not this error.");
+        } else {
+            CDLogf("  ⇒ the driver ACCEPTED AudioPlay. Whether anything is audible is "
+                   "now the H1 test — see the user's answer at the end of this run.");
         }
-        CDLogf("  ⇒ the driver ACCEPTED AudioPlay. Whether anything is audible is "
-               "now the H1 test — see the user's answer at the end of this run.");
         CDProgressSay("PLAYING track %d - LISTEN NOW for ~12 seconds",
                       gP.toc.track[gP.audioTrackIdx].number);
     }
@@ -1041,9 +1058,15 @@ int main(void)
                        pub->reqWrite, pub->reqRead, pub->reqDropped);
                 CDLogf("  refusals serviced: %ld   unresolvable plays: %ld",
                        pub->refusalsServiced, pub->playResolveFails);
+                CDLogf("  unknown position types: %ld   plays coalesced: %ld",
+                       pub->posTypeUnknown, pub->playsCoalesced);
                 if (pub->playResolveFails > 0)
                     CDLogf("  !! an accepted play could not be resolved — real silence, "
                            "and it must be zero.");
+                if (pub->posTypeUnknown > 0)
+                    CDLogf("  !! a position type outside 0..2 arrived. The encoding "
+                           "contract read from .AppleCD v1.4.0 does not hold here, and "
+                           "nothing below can be trusted until that is understood.");
                 if (pub->reqDropped > 0)
                     CDLogf("  !! dropped requests mean the pump missed calls this probe "
                            "made - treat any silence below as explained by that.");

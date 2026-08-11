@@ -335,6 +335,14 @@ afterDrain:
             CDLogf("  ⇒ every refused request was nevertheless played. The caller was "
                    "told no; the music happened anyway. See kEngineNotableRefusal for "
                    "why we cannot correct the answer on a queued call.");
+        CDLogf("  unknown position types: %ld   plays coalesced: %ld",
+               pub->posTypeUnknown, pub->playsCoalesced);
+        if (pub->posTypeUnknown > 0)
+            CDLogf("  !! %ld request(s) carried a position type outside 0..2. The "
+                   "encoding contract was read out of .AppleCD v1.4.0 and this machine "
+                   "is not honouring it — re-read the driver actually installed here "
+                   "before trusting any address this pump resolved.",
+                   pub->posTypeUnknown);
         if (pub->reqDropped > 0)
             CDLogf("  ⇒ %ld request(s) were LOST. Any missing music is explained by "
                    "this; the ring needs to be bigger or the pump needs more time.",

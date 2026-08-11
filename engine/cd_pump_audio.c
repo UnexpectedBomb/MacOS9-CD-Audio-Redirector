@@ -312,25 +312,80 @@ void CDPumpStop(void)
 /* Resolve a transport request's csParam into an LBA range using the TOC. Both the MSF
  * and track-number forms are accepted: Phase 0 measured this driver taking posType 0
  * with MSF, but a game may use either. */
+/* ★★★ Decode strictly by the position type in the word at csParam+0.
+ *
+ * This used to sniff: read M,S,F from cp[2],cp[3],cp[4], read a track number from
+ * cp[2], and take whichever looked plausible — never once consulting the type. It
+ * agreed perfectly with CDPlayProbe, because the probe wrote the same wrong layout,
+ * and thirty-odd hardware runs therefore proved only that our two halves were
+ * consistent with each other.
+ *
+ * A REAL GAME encodes it properly, and the old code mis-read it. Warcraft asks for
+ * track 2 as MSF 29:43:25, which puts 0x29,0x43,0x25 at cp[3],cp[4],cp[5]. The
+ * sniffer read m=cp[2]=0, s=0x29→29, f=0x43→43, all of which pass a plausibility
+ * check, and resolved LBA 2068 — inside the 261 MB DATA track. v10's DATA guard then
+ * correctly refused to stream it, so the whole thing came out as silence with every
+ * counter reading zero. That is exactly the report we got from a mixed-mode disc.
+ *
+ * The contract is in cd_cscodes.h, taken from the driver's own parser. An unknown
+ * type is NOT guessed at: it is refused and counted, so if v1.4.8 differs from the
+ * v1.4.0 that was disassembled, the log says so instead of playing the wrong thing.
+ */
 static Boolean DecodePos(const unsigned char *cp, long *startLBA, long *endLBA)
 {
     long  lba = -1;
     short i;
+    short posType;
 
     if (!gTOC.valid) return false;
 
-    {
-        short m = kBCDToBin(cp[2]), s = kBCDToBin(cp[3]), f = kBCDToBin(cp[4]);
-        if (m <= 99 && s < 60 && f < 75) lba = CDMSFToLBA(m, s, f);
-    }
-    {
-        short trk = kBCDToBin(cp[2]);
-        if (trk >= gTOC.firstTrack && trk <= gTOC.lastTrack &&
-            (lba < 0 || (cp[3] == 0 && cp[4] == 0))) {
-            for (i = 0; i < gTOC.trackCount; i++)
-                if (gTOC.track[i].number == trk) { lba = gTOC.track[i].lba; break; }
+    posType = (short)((cp[0] << 8) | cp[1]);     /* the WORD at csParam+0 */
+
+    switch (posType) {
+    case kCDPosTypeBlock: {
+        lba = ((long)cp[2] << 24) | ((long)cp[3] << 16) |
+              ((long)cp[4] << 8)  |  (long)cp[5];
+        /* Bound it against what a CD can physically hold — 80 minutes is 360000
+         * sectors. The TOC we keep has no lead-out field, and this check exists for
+         * a specific reason rather than as decoration: the old encoding bug sent
+         * type-0 addresses of ~691,000,000 and nothing rejected them. */
+        if (lba < 0 || lba >= 360000L) {
+            CDLogf("  pump: block address %ld is not on a CD", lba);
+            return false;
         }
+        break;
     }
+    case kCDPosTypeMSF: {
+        short m = kBCDToBin(cp[3]), s = kBCDToBin(cp[4]), f = kBCDToBin(cp[5]);
+        if (m > 99 || s >= 60 || f >= 75) {
+            CDLogf("  pump: MSF %02d:%02d:%02d is not a valid address", m, s, f);
+            return false;
+        }
+        lba = CDMSFToLBA(m, s, f);
+        break;
+    }
+    case kCDPosTypeTrack: {
+        short trk = kBCDToBin(cp[5]);
+        if (trk < gTOC.firstTrack || trk > gTOC.lastTrack) {
+            CDLogf("  pump: track %d is outside the TOC's %d..%d",
+                   trk, gTOC.firstTrack, gTOC.lastTrack);
+            return false;
+        }
+        for (i = 0; i < gTOC.trackCount; i++)
+            if (gTOC.track[i].number == trk) { lba = gTOC.track[i].lba; break; }
+        break;
+    }
+    default:
+        /* ★ Counted, never guessed. A non-zero count here means the encoding
+         * contract taken from v1.4.0 does not hold for whatever is running, and
+         * that has to be visible rather than inferred from silence. */
+        if (gPub != NULL) gPub->posTypeUnknown++;
+        CDLogf("  pump: position type %d is not one of 0 (block), 1 (MSF) or "
+               "2 (track). Refusing rather than guessing — %ld seen so far.",
+               posType, gPub != NULL ? gPub->posTypeUnknown : -1L);
+        return false;
+    }
+
     if (lba < 0) return false;
 
     *startLBA = lba;
@@ -490,6 +545,29 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     }
     CDLogf("  pump: play LBA %ld .. %ld (%ld sectors, %ld s)",
            a, b, b - a, (b - a) / kCDDASectorsPerSec);
+
+    /* ★ A repeat request for the range already playing keeps playing.
+     *
+     * Restarting unconditionally is what made a mixed-mode disc silent even once the
+     * TOC was right. The probe hunts for an accepted encoding, so when the driver
+     * refuses them all it issues eight AudioPlays inside a tenth of a second; the
+     * pump serviced every one by stopping, resetting and re-reading a two-second
+     * pre-roll. At the measured 330 KB/s that pre-roll alone is about a second, so
+     * playback never survived long enough to hear — sixteen plays across 21.8 s of
+     * log, and the listener reported "silent, or maybe a very short buzz".
+     *
+     * This is not merely a probe artefact: a game that gets an error back and retries
+     * generates the same pattern, and so does one that re-issues Play on a loop
+     * boundary. Coalescing costs nothing when the range differs, which is the case
+     * that must still restart (a real track change — phase B covers it). */
+    if (gPlaying && !gPaused && a == gPlayStartLBA && b == gEndLBA) {
+        CDLogf("  pump: already playing this exact range; continuing rather than "
+               "restarting (a restart here would re-read the pre-roll and the music "
+               "would never be heard)");
+        if (gPub != NULL) gPub->playsCoalesced++;
+        PublishCursor();
+        return noErr;
+    }
 
     if (gPlaying) CDPumpStop();
 
