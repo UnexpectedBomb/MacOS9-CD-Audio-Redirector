@@ -101,14 +101,27 @@ mixed-mode disc to answer and this machine does not have one.
 4. Then launch Warcraft itself and send the log. The pump records every serviced request with
    its parameters, so that captures the game's real call pattern.
 
-Also worth doing: tell Jubadub the bug he found is fixed, and ask him to retest with v10. He is
-already set up, and his disc is a second machine and a second copy of the game.
+### ★★★ STANDING DECISION 2026-08-11: WE DO NOT ASK JUBADUB TO RUN OUR TESTS
 
-**Decision 2026-08-10: that reply is deliberately held** until v10 has been run against a
-mixed-mode disc here. The choice is between telling him "fixed, untested" and telling him
-"fixed and verified", and his last run cost him a boot to produce a report we could only
-partly act on. His post reporting the buzzing is still the newest in topic 7829, so nothing is
-lost by waiting for the disc; what would be lost is a second unverified round trip.
+**Testing is our job.** No further build goes to him to try out. The next time we contact him,
+the solution is airtight and proven on real hardware here, and the message is "this works, here
+is the evidence" rather than "please run this and tell us what happened".
+
+Stated by the user: *"I am not going to keep asking Jubadub to run tests since that's really our
+job, once the disc arrives. When I come back to him, I want the solution to be airtight, proven
+on real hardware."*
+
+He has already spent two boots producing reports for builds that were wrong in ways we could
+have found ourselves — the TOC control nibble, then the position encoding. His reports remain
+extremely valuable as **independent confirmation on a second machine and a second copy of the
+game**, which is a different thing from using him as a test runner.
+
+⚠ **This applies to the published artifact too.** `dist/` and the README currently point a
+downloader at **v10**, which we now know cannot work with a real mixed-mode game: it decodes the
+game's address with the old layout, lands inside the data track, and the DATA guard refuses. The
+README's existing caveat only says v10 "has not yet been run against a mixed-mode disc", which
+understates it — we now know it fails. Leaving that standing is the same mistake as asking a
+tester to run an unproven build, just at a larger scale.
 
 **Also settled 2026-08-10, while waiting:** `engine/cd_engine_audio.c` carried its own copy of
 the TOC parse with the *same* high-nibble bug. It is dead code (referenced by nothing, not even
