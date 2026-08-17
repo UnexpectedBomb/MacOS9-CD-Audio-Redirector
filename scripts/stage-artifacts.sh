@@ -73,9 +73,18 @@ if [ -n "${CD_STAGE_HOST}" ]; then
     fi
 fi
 
+# ── WHAT GETS STAGED ─────────────────────────────────────────────────────────
+# The MacBinary .bin only. Every artifact used to be copied as both .bin and .img,
+# which doubled the file count on the share for no benefit: the .bin is what gets
+# hand-transferred and expanded on the OS 9 side, and the .img was never the one
+# picked. Nineteen stale .img files had accumulated by 2026-08-17, and a share where
+# the right file is hard to find is how the wrong one gets tested.
+#
+# The .img is still BUILT, it is just not copied. Override with CD_STAGE_EXTS if a
+# mountable image is ever wanted again, e.g. CD_STAGE_EXTS="bin img".
 staged=0
 for base in ${BASES}; do
-    for ext in bin img; do
+    for ext in ${CD_STAGE_EXTS:-bin}; do
         f="${BUILD_DIR}/${base}.${ext}"
         [ -f "${f}" ] || continue
         copy_one "${f}" "${base}.${ext}" || { echo "stage-artifacts: copy of ${base}.${ext} failed" >&2; exit 1; }
@@ -86,7 +95,7 @@ done
 # Say nothing succeeded when nothing did. A cheerful line over an empty copy is
 # how a stale artifact gets tested for a whole cycle.
 if [ "${staged}" -eq 0 ]; then
-    echo "stage-artifacts: NOTHING STAGED - no ${BASES} .bin/.img in ${BUILD_DIR}" >&2
+    echo "stage-artifacts: NOTHING STAGED - no ${BASES} .${CD_STAGE_EXTS:-bin} in ${BUILD_DIR}" >&2
     exit 1
 fi
 echo "stage-artifacts: ${BASES} (${staged} file(s)) -> ${CD_STAGE_DIR}"
