@@ -14,7 +14,7 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED TRUE)
 add_compile_options(-Wno-multichar -Wall)
 
-add_application(CDPlayProbe_v15
+add_application(CDPlayProbe_v16
     cd_play_probe.c
     ../common/cd_probe_common.c
     cd_play_probe.r
@@ -22,37 +22,37 @@ add_application(CDPlayProbe_v15
     CREATOR  "CDpp"
 )
 
-target_include_directories(CDPlayProbe_v15 PRIVATE
+target_include_directories(CDPlayProbe_v16 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../engine   # cd_engine.h: the real CDEnginePublic
     ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 
 # DriverLoaderLib supplies GetDriverInformation (the native-vs-classic
 # classifier); everything else resolves from InterfaceLib.
-target_link_libraries(CDPlayProbe_v15 DriverLoaderLib InterfaceLib)
+target_link_libraries(CDPlayProbe_v16 DriverLoaderLib InterfaceLib)
 
 if(TARGET retrocrt)
-    add_dependencies(CDPlayProbe_v15 retrocrt)
+    add_dependencies(CDPlayProbe_v16 retrocrt)
 endif()
 
 set(WRAP_APM $ENV{HOME}/Developer/claude-os9/client/scripts/wrap-apm.py)
 add_custom_command(
-    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v15.img
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v16.img
     COMMAND /usr/bin/env python3 ${WRAP_APM}
-            ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v15.dsk
-            ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v15.img
-            CDPlayProbe_v15
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v15.dsk ${WRAP_APM}
-    COMMENT "Wrapping CDPlayProbe_v15.dsk in Apple Partition Map -> CDPlayProbe_v15.img"
+            ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v16.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v16.img
+            CDPlayProbe_v16
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v16.dsk ${WRAP_APM}
+    COMMENT "Wrapping CDPlayProbe_v16.dsk in Apple Partition Map -> CDPlayProbe_v16.img"
     VERBATIM)
-add_custom_target(CDPlayProbe_v15_disk ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v15.img)
-add_dependencies(CDPlayProbe_v15_disk CDPlayProbe_v15_APPL)
+add_custom_target(CDPlayProbe_v16_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDPlayProbe_v16.img)
+add_dependencies(CDPlayProbe_v16_disk CDPlayProbe_v16_APPL)
 
-add_custom_command(TARGET CDPlayProbe_v15_disk POST_BUILD
+add_custom_command(TARGET CDPlayProbe_v16_disk POST_BUILD
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/stage-artifacts.sh
-            ${CMAKE_CURRENT_BINARY_DIR} CDPlayProbe_v15
-    COMMENT "Staging CDPlayProbe_v15"
+            ${CMAKE_CURRENT_BINARY_DIR} CDPlayProbe_v16
+    COMMENT "Staging CDPlayProbe_v16"
     VERBATIM)
 
 # ★ The version banner in every log is the TARGET NAME itself, injected here as a
@@ -60,5 +60,5 @@ add_custom_command(TARGET CDPlayProbe_v15_disk POST_BUILD
 # announced itself as v10 because only the target had been bumped, and the log is
 # how you know what ran. A source that lacks CD_ARTIFACT_NAME fails to compile, so
 # a target missing from this list is a loud error rather than an unlabelled binary.
-target_compile_definitions(CDPlayProbe_v15 PRIVATE
+target_compile_definitions(CDPlayProbe_v16 PRIVATE
     CD_ARTIFACT_NAME=\"$<TARGET_PROPERTY:NAME>\")

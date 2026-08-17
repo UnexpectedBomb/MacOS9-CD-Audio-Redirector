@@ -50,8 +50,24 @@
  * no field did. Readers must check. 6 = posTypeUnknown and playsCoalesced appended,
  * alongside the corrected position decoding — a version-5 reader would miss exactly the
  * two counters that say whether that correction is holding. 7 = suppressStops and
- * stopsSuppressed appended, for stopping the driver's own transport. */
-#define kEngineVersion  7
+ * stopsSuppressed appended, for stopping the driver's own transport. 8 = the stall
+ * recorder (stallSite, stallTicks, stallCount). */
+#define kEngineVersion  8
+
+/* Which synchronous call blocked. Deliberately every candidate rather than the one I
+ * currently suspect, because the last three suspicions were wrong. */
+#define kStallSiteNone          0
+#define kStallSiteGetBlockSize  1   /* Status  GetBlockSize                        */
+#define kStallSiteSetBlock2352  2   /* Control ChangeBlockSize to 2352             */
+#define kStallSiteRead          3   /* PBReadSync of CD-DA sectors                 */
+#define kStallSiteRestoreBlock  4   /* Control ChangeBlockSize back to normal      */
+#define kStallSiteReadTOC       5   /* the TOC re-read inside EnsureTOC            */
+#define kStallSiteAudioStop     6   /* our own AudioStop to the driver             */
+#define kStallSiteLogWrite      7   /* FSWrite + FlushVol of a log line            */
+
+/* Half a second. Long enough that ordinary calls never register, short enough that
+ * anything a listener could notice does. */
+#define kStallThresholdTicks    30
 
 /* ★ WHICH refusals we NOTE — and why we no longer try to overrule them.
  *
@@ -469,6 +485,29 @@ typedef struct {
      * has taken over, and anything more means a caller's Stop was swallowed. */
     volatile long   suppressStops;
     volatile long   stopsSuppressed;
+
+    /* ★★ THE STALL RECORDER, engine version 8 (2026-08-17).
+     *
+     * Something takes about 31 seconds on the first play of each probe run, twice
+     * measured at 31.2 s and 31.6 s. That consistency says timeout, not mechanics. It
+     * cannot be found by logging, because the pump is not running while it happens and
+     * a log line only appears once it is over.
+     *
+     * PBReadSync busy-waits without yielding, so while the pump sits in one no other
+     * application is scheduled - which is why the probe was stuck in WaitNextEvent for
+     * the same 31 s. That points at one of OUR synchronous calls, but three different
+     * theories have now been wrong, so this records WHICH call rather than assuming.
+     *
+     * Each instrumented call is timed with TickCount either side. Anything longer than
+     * kStallThresholdTicks updates the worst-so-far. Two stores and a compare, no I/O,
+     * safe to leave in the shipping build - and it makes a failure that is currently
+     * invisible say its own name, which is what the ship gate asks for.
+     *
+     * stallSite values are kStallSite* below. stallTicks is the worst duration seen,
+     * stallCount how many calls crossed the threshold at all. */
+    volatile long   stallSite;
+    volatile long   stallTicks;
+    volatile long   stallCount;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

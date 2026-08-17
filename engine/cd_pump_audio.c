@@ -241,6 +241,22 @@ OSErr CDPumpInit(short refNum, short driveNum)
  * the underrun counter is the check.
  */
 
+/* ★ Record a call that took too long, so the next hardware run names the culprit
+ * instead of costing another theory. Cheap by construction: two TickCount reads and a
+ * compare. Keeps the WORST duration rather than the latest, because the 31-second one
+ * is the whole question and a later 40-tick call must not overwrite it. */
+static void NoteStall(long site, long startTicks)
+{
+    long elapsed = TickCount() - startTicks;
+
+    if (elapsed < kStallThresholdTicks || gPub == NULL) return;
+    gPub->stallCount++;
+    if (elapsed > gPub->stallTicks) {
+        gPub->stallTicks = elapsed;
+        gPub->stallSite  = site;
+    }
+}
+
 /* The drive's own block size, captured once and reused. Captured rather than assumed
  * because the value is the drive's, not ours; guarded against capturing 2352 itself,
  * which would make "restore" a no-op and hide the whole problem. */
@@ -248,10 +264,15 @@ static void CaptureNormalBlockSize(void)
 {
     short p[11];
     int   i;
+    long  t0;
+    OSErr err;
 
     if (gNormalBlockSize > 0) return;
     for (i = 0; i < 11; i++) p[i] = 0;
-    if (CDStatusCall(gRefNum, kcsGetBlockSize, p, sizeof(p)) == noErr &&
+    t0 = TickCount();
+    err = CDStatusCall(gRefNum, kcsGetBlockSize, p, sizeof(p));
+    NoteStall(kStallSiteGetBlockSize, t0);
+    if (err == noErr &&
         p[0] > 0 && p[0] != kCDDASectorBytes)
         gNormalBlockSize = p[0];
     else
@@ -284,7 +305,11 @@ static void StopDriverTransport(void)
     for (i = 0; i < 11; i++) p[i] = 0;
 
     gPub->suppressStops++;
-    (void)CDControlCall(gRefNum, kcsAudioStop, p, sizeof(p), NULL, 0);
+    {
+        long t0 = TickCount();
+        (void)CDControlCall(gRefNum, kcsAudioStop, p, sizeof(p), NULL, 0);
+        NoteStall(kStallSiteAudioStop, t0);
+    }
     CDLogf("  pump: stopped the driver's own transport (it accepts AudioPlay now and "
            "would otherwise hold the drive)");
 }
@@ -296,10 +321,14 @@ static void SetBlockSize(short size)
 {
     short p[11];
     int   i;
+    long  t0;
 
     for (i = 0; i < 11; i++) p[i] = 0;
     p[0] = size;
+    t0 = TickCount();
     (void)CDControlCall(gRefNum, kcsChangeBlockSize, p, sizeof(p), NULL, 0);
+    NoteStall(size == kCDDASectorBytes ? kStallSiteSetBlock2352
+                                       : kStallSiteRestoreBlock, t0);
 }
 
 /* Lean read: no logging, because this runs inside the refill loop. */
@@ -316,7 +345,12 @@ static long ReadSectors(long lba, void *dest, long sectors)
     pb.ioParam.ioPosMode   = fsFromStart;
     pb.ioParam.ioPosOffset = lba * kCDDASectorBytes;
 
-    if (PBReadSync(&pb) != noErr) return 0;
+    {
+        long t0 = TickCount();
+        OSErr rerr = PBReadSync(&pb);
+        NoteStall(kStallSiteRead, t0);
+        if (rerr != noErr) return 0;
+    }
     return pb.ioParam.ioActCount;
 }
 
@@ -567,7 +601,11 @@ static void EnsureTOC(void)
      * read on this hardware has had. The old dance here existed only because playback
      * used to hold 2352 across everything. */
     CDLogSetQuiet(true);
-    CDReadTOC(gRefNum, &gTOCScratch);
+    {
+        long t0 = TickCount();
+        CDReadTOC(gRefNum, &gTOCScratch);
+        NoteStall(kStallSiteReadTOC, t0);
+    }
     CDLogSetQuiet(false);
 
     if (!gTOCScratch.valid) {

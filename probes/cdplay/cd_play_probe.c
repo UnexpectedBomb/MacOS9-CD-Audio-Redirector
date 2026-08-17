@@ -1154,6 +1154,11 @@ int main(void)
                 CDLogf("  unknown position types: %ld   plays coalesced: %ld",
                        pub->posTypeUnknown, pub->playsCoalesced);
                 CDLogf("  driver transports stopped: %ld", pub->stopsSuppressed);
+                if (pub->stallCount > 0)
+                    CDLogf("  ★ WORST STALL: site %ld for %ld ticks, %ld over "
+                           "threshold (1 GetBlockSize 2 SetBlock2352 3 PBRead "
+                           "4 RestoreBlock 5 ReadTOC 6 AudioStop 7 logWrite)",
+                           pub->stallSite, pub->stallTicks, pub->stallCount);
                 if (pub->playResolveFails > 0)
                     CDLogf("  !! an accepted play could not be resolved — real silence, "
                            "and it must be zero.");

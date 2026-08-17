@@ -340,6 +340,14 @@ afterDrain:
         CDLogf("  driver transports stopped: %ld (should equal the plays we took "
                "over; more than that means a caller's Stop was swallowed)",
                pub->stopsSuppressed);
+        if (pub->stallCount > 0)
+            CDLogf("  ★ WORST STALL: site %ld for %ld ticks (%ld.%ld s), %ld call(s) "
+                   "over threshold. Sites: 1 GetBlockSize, 2 SetBlock2352, 3 PBRead, "
+                   "4 RestoreBlock, 5 ReadTOC, 6 AudioStop, 7 log write.",
+                   pub->stallSite, pub->stallTicks, pub->stallTicks / 60,
+                   (pub->stallTicks % 60) * 10 / 60, pub->stallCount);
+        else
+            CDLogf("  no call exceeded the stall threshold");
         if (pub->posTypeUnknown > 0)
             CDLogf("  !! %ld request(s) carried a position type outside 0..2. The "
                    "encoding contract was read out of .AppleCD v1.4.0 and this machine "
