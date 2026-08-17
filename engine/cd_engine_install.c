@@ -337,6 +337,9 @@ afterDrain:
                    "why we cannot correct the answer on a queued call.");
         CDLogf("  unknown position types: %ld   plays coalesced: %ld",
                pub->posTypeUnknown, pub->playsCoalesced);
+        CDLogf("  driver transports stopped: %ld (should equal the plays we took "
+               "over; more than that means a caller's Stop was swallowed)",
+               pub->stopsSuppressed);
         if (pub->posTypeUnknown > 0)
             CDLogf("  !! %ld request(s) carried a position type outside 0..2. The "
                    "encoding contract was read out of .AppleCD v1.4.0 and this machine "

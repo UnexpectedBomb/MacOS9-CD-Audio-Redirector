@@ -258,6 +258,37 @@ static void CaptureNormalBlockSize(void)
         gNormalBlockSize = 512;
 }
 
+/* ★★ STOP THE DRIVER'S OWN TRANSPORT, having taken the play over.
+ *
+ * With the address encoding corrected, .AppleCD accepts AudioPlay and actually seeks
+ * and plays the track. On a machine with no analog CD-audio wire that produces no
+ * sound whatsoever - it only occupies the drive. Runs A and B both measured the cost:
+ * every task-level application on the machine stopped for about 31 seconds per play,
+ * the ring drained in 2 s, and the doubleback then emitted 29 s of silence at
+ * interrupt level. That is the "long pause" a listener hears.
+ *
+ * The game still gets the driver's own answer, because the handler chains the play as
+ * it always has. We only decline to let the transport keep running afterwards.
+ *
+ * ⚠ THE FLAG MUST BE SET WITH NO YIELD BEFORE THE CALL. Same cooperative-scheduling
+ * argument as the block size: nothing else can run between these two statements, so
+ * the flag cannot be consumed by somebody else's Stop. It is a counter rather than a
+ * boolean, and every use is audited in stopsSuppressed, so if that ever exceeds the
+ * number of plays we took over, a caller's Stop was swallowed and the log says so. */
+static void StopDriverTransport(void)
+{
+    short p[11];
+    int   i;
+
+    if (gPub == NULL) return;
+    for (i = 0; i < 11; i++) p[i] = 0;
+
+    gPub->suppressStops++;
+    (void)CDControlCall(gRefNum, kcsAudioStop, p, sizeof(p), NULL, 0);
+    CDLogf("  pump: stopped the driver's own transport (it accepts AudioPlay now and "
+           "would otherwise hold the drive)");
+}
+
 /* Deliberately silent and allocation-free: it runs between the two halves of the
  * no-yield sequence in RefillOnce, and anything that could yield here would reopen
  * exactly the window this exists to close. */
@@ -694,6 +725,10 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     err = SndPlayDoubleBuffer(gChan, (SndDoubleBufferHeaderPtr)&h);
     CDLogf("  pump: SndPlayDoubleBuffer err=%d", err);
     if (err != noErr) gPlaying = false;
+
+    if (err == noErr)
+        StopDriverTransport();
+
     PublishCursor();
     return err;
 }

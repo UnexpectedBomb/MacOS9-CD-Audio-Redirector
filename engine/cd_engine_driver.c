@@ -231,6 +231,30 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
     if (pb != NULL && gPub != NULL && gPub->patched && kRingUsable) {
         short cs = ((CntrlParam *)pb)->csCode;
 
+        /* ★★ THE PUMP'S OWN AudioStop PASSES STRAIGHT THROUGH.
+         *
+         * Once the encoding was corrected, .AppleCD started ACCEPTING AudioPlay and
+         * really driving the transport - which on a machine with no analog wire makes
+         * no sound and simply occupies the drive. Runs A and B both stalled every
+         * task-level app on the machine for about 31 seconds per play, draining the
+         * ring and emitting 29 s of silence. So the pump now stops the driver's
+         * transport right after it takes a play over, and that stop must not be
+         * mistaken for the game asking us to stop.
+         *
+         * ⚠ The window between the pump setting the flag and this call arriving is not
+         * a race on a cooperative system: the pump does not yield between the two, so
+         * no other task can slip an AudioStop in between. An interrupt-level caller
+         * still could in principle, which is why every suppression is COUNTED rather
+         * than assumed - a game's lost Stop would show up as stopsSuppressed climbing
+         * without the pump having asked for it. */
+        if (cs == kcsAudioStop && gPub->suppressStops > 0) {
+            gPub->suppressStops--;
+            gPub->stopsSuppressed++;
+            /* Chain it so the driver really does stop, but post nothing: this stop is
+             * ours, and the pump must keep playing. */
+            return (gOrigCtl != NULL) ? gOrigCtl(pb, dce) : controlErr;
+        }
+
         /* Only the four the pump's switch handles. AudioScan and AudioControl are
          * posted for the trace but the pump does nothing with them, so a refusal of
          * those is not ours to overrule. */

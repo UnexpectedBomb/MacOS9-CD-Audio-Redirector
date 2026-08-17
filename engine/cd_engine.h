@@ -49,8 +49,9 @@
  * would report the old meaning against the new engine, so the version moves even though
  * no field did. Readers must check. 6 = posTypeUnknown and playsCoalesced appended,
  * alongside the corrected position decoding — a version-5 reader would miss exactly the
- * two counters that say whether that correction is holding. */
-#define kEngineVersion  6
+ * two counters that say whether that correction is holding. 7 = suppressStops and
+ * stopsSuppressed appended, for stopping the driver's own transport. */
+#define kEngineVersion  7
 
 /* ★ WHICH refusals we NOTE — and why we no longer try to overrule them.
  *
@@ -453,6 +454,21 @@ typedef struct {
      * knowing before tuning anything else. */
     volatile long   posTypeUnknown;
     volatile long   playsCoalesced;
+
+    /* ★ Stopping the DRIVER's own transport, added at engine version 7 (2026-08-17).
+     *
+     * With the address encoding corrected, .AppleCD accepts AudioPlay and really drives
+     * the disc. That makes no sound on a machine with no analog wire; it just occupies
+     * the drive, and runs A and B both froze every task-level application for about
+     * 31 seconds per play while it did - 2 s of ring drained, then 29 s of silence.
+     *
+     * So the pump stops the driver's transport right after taking a play over.
+     * `suppressStops` is how it tells the handler that the next AudioStop is its own and
+     * must be chained without being posted, or the handler would stop the pump too.
+     * `stopsSuppressed` is the audit trail: it should equal the number of plays the pump
+     * has taken over, and anything more means a caller's Stop was swallowed. */
+    volatile long   suppressStops;
+    volatile long   stopsSuppressed;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

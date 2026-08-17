@@ -1153,6 +1153,7 @@ int main(void)
                        pub->refusalsServiced, pub->playResolveFails);
                 CDLogf("  unknown position types: %ld   plays coalesced: %ld",
                        pub->posTypeUnknown, pub->playsCoalesced);
+                CDLogf("  driver transports stopped: %ld", pub->stopsSuppressed);
                 if (pub->playResolveFails > 0)
                     CDLogf("  !! an accepted play could not be resolved — real silence, "
                            "and it must be zero.");
