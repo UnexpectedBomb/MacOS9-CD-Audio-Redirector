@@ -60,3 +60,11 @@ add_custom_command(TARGET CDTraceRead_v6_disk POST_BUILD
             ${CMAKE_CURRENT_BINARY_DIR} CDTraceRead_v6
     COMMENT "Staging CDTraceRead_v6"
     VERBATIM)
+
+# ★ The version banner in every log is the TARGET NAME itself, injected here as a
+# generator expression, never a literal in the .c file. On 2026-08-17 a v11 build
+# announced itself as v10 because only the target had been bumped, and the log is
+# how you know what ran. A source that lacks CD_ARTIFACT_NAME fails to compile, so
+# a target missing from this list is a loud error rather than an unlabelled binary.
+target_compile_definitions(CDTraceRead_v6 PRIVATE
+    CD_ARTIFACT_NAME=\"$<TARGET_PROPERTY:NAME>\")

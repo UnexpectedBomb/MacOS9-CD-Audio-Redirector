@@ -77,7 +77,13 @@
 #include "cd_probe_common.h"
 #include "cd_cscodes.h"
 
-#define kVersionString  "CDRecon v2"
+/* The banner is the CMake target name, never a hand-maintained literal: on
+ * 2026-08-17 a v13 build announced itself as v12 because only the target was
+ * bumped. A stamp that can drift from the artifact lies with authority. */
+#ifndef CD_ARTIFACT_NAME
+#error "CD_ARTIFACT_NAME is not defined. The CMakeLists must pass the target name."
+#endif
+#define kVersionString  CD_ARTIFACT_NAME
 
 typedef enum {
     kDAENotRun = 0,

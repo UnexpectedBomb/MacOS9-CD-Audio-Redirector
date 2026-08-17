@@ -44,7 +44,13 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"
 
-#define kVersionString  "CDTraceRead v5"
+/* The banner is the CMake target name, never a hand-maintained literal: on
+ * 2026-08-17 a v13 build announced itself as v12 because only the target was
+ * bumped. A stamp that can drift from the artifact lies with authority. */
+#ifndef CD_ARTIFACT_NAME
+#error "CD_ARTIFACT_NAME is not defined. The CMakeLists must pass the target name."
+#endif
+#define kVersionString  CD_ARTIFACT_NAME
 
 /* noQueueBit is bit 9 of the trap word. An immediate call ends in RTS; a queued one
  * must end at jIODone. */

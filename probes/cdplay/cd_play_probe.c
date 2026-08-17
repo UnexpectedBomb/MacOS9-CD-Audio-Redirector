@@ -75,7 +75,13 @@
 #include "cd_cscodes.h"
 #include "cd_engine.h"      /* the real CDEnginePublic, so the layout cannot drift */
 
-#define kVersionString  "CDPlayProbe v12"
+/* The banner is the CMake target name, never a hand-maintained literal: on
+ * 2026-08-17 a v13 build announced itself as v12 because only the target was
+ * bumped. A stamp that can drift from the artifact lies with authority. */
+#ifndef CD_ARTIFACT_NAME
+#error "CD_ARTIFACT_NAME is not defined. The CMakeLists must pass the target name."
+#endif
+#define kVersionString  CD_ARTIFACT_NAME
 
 #define kPollSeconds    10      /* how long to watch a playing track    */
 #define kPollTicks      15      /* poll interval, ~4 Hz                 */
@@ -199,6 +205,53 @@ static void LogPumpState(void)
     }
 }
 
+/* ★ Did the PUMP take the last request, or only the driver?
+ *
+ * On 2026-08-17 phases B and C each reported "reported status CHANGED over N s. A
+ * moving position means audio really is being delivered" while the pump had in fact
+ * REFUSED both requests (unknown position type) and what was still playing was phase
+ * A's track from minutes earlier. The position was moving; it just had nothing to do
+ * with the request being judged. Both verdicts were confidently wrong.
+ *
+ * So a snapshot is taken immediately BEFORE each play is issued, and the verdict
+ * checks whether the pump's refusal counters moved. That is the difference between
+ * "audio is playing" and "audio is playing BECAUSE OF THIS REQUEST", which is the only
+ * one worth reporting. */
+static long    gPreUnknownType   = 0;
+static long    gPreResolveFails  = 0;
+static Boolean gHavePreSnapshot  = false;
+
+static Boolean ReadPumpRefusals(long *unknownType, long *resolveFails)
+{
+    long gv = 0;
+
+    if (Gestalt(kEnginePublicSelector, &gv) != noErr || gv == 0) return false;
+    {
+        CDEnginePublic *pub = (CDEnginePublic *)gv;
+        if (pub->magic != kEngineMagic || pub->version != kEngineVersion) return false;
+        *unknownType  = pub->posTypeUnknown;
+        *resolveFails = pub->playResolveFails;
+        return true;
+    }
+}
+
+static void SnapshotPumpBeforePlay(void)
+{
+    gHavePreSnapshot = ReadPumpRefusals(&gPreUnknownType, &gPreResolveFails);
+}
+
+/* Returns true if the pump refused whatever was issued since the snapshot. */
+static Boolean PumpRefusedSincePlay(long *newUnknown, long *newResolveFail)
+{
+    long u = 0, r = 0;
+
+    *newUnknown = 0; *newResolveFail = 0;
+    if (!gHavePreSnapshot || !ReadPumpRefusals(&u, &r)) return false;
+    *newUnknown    = u - gPreUnknownType;
+    *newResolveFail = r - gPreResolveFails;
+    return (*newUnknown > 0) || (*newResolveFail > 0);
+}
+
 /* LBA -> absolute MSF, the inverse of CDMSFToLBA. Absolute frame numbering starts
  * 150 frames (2 s) before LBA 0, which is the lead-in. */
 static void LBAToMSF(long lba, int *m, int *s, int *f)
@@ -220,16 +273,26 @@ static OSErr PlayAtLBA(long lba, const char *label)
     int            m, s, f;
     OSErr          err;
 
+    /* ⚠ THIS WAS THE SECOND ENCODER, AND IT WAS MISSED. When TryAudioCall was
+     * corrected to the real layout, this one kept writing the type as a byte at +0 and
+     * the MSF at +2. Phases B, C and D all start playback through here, so all three
+     * sent position type 0x0100, the pump refused them as an unknown type, and the run
+     * of 2026-08-17 executed none of them while appearing to. Two encoders for one wire
+     * format is the defect; the type now decides the layout, exactly as in TryAudioCall.
+     *
+     * MSF is always the right form here because the caller has an LBA, not a track. */
     LBAToMSF(lba, &m, &s, &f);
     memset(param, 0, sizeof(param));
-    b[0] = (unsigned char)(gP.playPosType >= 0 ? gP.playPosType : 0);
-    b[2] = kBinToBCD(m);
-    b[3] = kBinToBCD(s);
-    b[4] = kBinToBCD(f);
+    b[0] = 0;                        /* +0: position type, WORD */
+    b[1] = kCDPosTypeMSF;
+    b[3] = kBinToBCD(m);             /* +3..+5: M S F, BCD */
+    b[4] = kBinToBCD(s);
+    b[5] = kBinToBCD(f);
     b[6] = 0;                        /* play, do not merely position */
     b[9] = 0;                        /* stereo */
 
     CDLogf("--- %s: AudioPlay at LBA %ld = %02d:%02d:%02d ---", label, lba, m, s, f);
+    SnapshotPumpBeforePlay();
     err = CDControlCall(gP.cd.refNum, kcsAudioPlay, param, sizeof(param), NULL, 0);
     CDLogf("  AudioPlay err=%d", err);
     return err;
@@ -305,12 +368,28 @@ static int PollFor(int seconds, const char *label, Boolean watchCompletion)
         CDLogf("  last  AudioStatus csParam:");
         CDLogHex("last ", last, 22);
         gP.statusMoved = (memcmp(first, last, 22) != 0);
-        CDLogf("  ⇒ reported status %s over %d s. %s",
-               gP.statusMoved ? "CHANGED" : "did NOT change", seconds,
-               gP.statusMoved
-                   ? "A moving position means audio really is being delivered."
-                   : "A frozen position means nothing is playing, whatever "
-                     "AudioPlay returned.");
+        {
+            long newUnknown = 0, newResolveFail = 0;
+            Boolean refused = PumpRefusedSincePlay(&newUnknown, &newResolveFail);
+
+            CDLogf("  ⇒ reported status %s over %d s.",
+                   gP.statusMoved ? "CHANGED" : "did NOT change", seconds);
+
+            if (refused) {
+                /* The one case that used to be reported as success. */
+                CDLogf("  ⇒ ⚠ BUT THE PUMP REFUSED THIS REQUEST "
+                       "(%ld unknown position type(s), %ld unresolvable play(s) since "
+                       "it was issued). Any movement above is LEFTOVER PLAYBACK from an "
+                       "earlier phase, not this one. This phase did NOT run.",
+                       newUnknown, newResolveFail);
+            } else if (gP.statusMoved) {
+                CDLogf("  ⇒ the pump accepted this request and the position is moving, "
+                       "so audio really is being delivered for it.");
+            } else {
+                CDLogf("  ⇒ a frozen position means nothing is playing, whatever "
+                       "AudioPlay returned.");
+            }
+        }
         if (watchCompletion) {
             CDLogf("  ⇒ end-of-track watch: completed status %s, position held in "
                    "%d of %d polls",
@@ -359,10 +438,23 @@ static void PollPosition(void)
 #define kPhaseDChunk    (32L * 1024L)
 
 /* The CD's DATA volume, if it has one. Returns its vRefNum, or 0. */
-static short FindCDDataVolume(Str255 volName)
+static Boolean FindReadableFile(short vRefNum, FSSpec *spec, long *sizeOut);
+
+/* ⚠ A mixed-mode disc mounts TWO volumes on this one driver: the HFS data volume and
+ * the audio-track pseudo-volume. This used to return whichever came first, behind a
+ * comment claiming it excluded the audio one. On 2026-08-17 the first happened to be
+ * 'Warcraft CD', so it worked by ordering luck, which is not the same as working.
+ *
+ * Neither the name nor the file count separates them: the audio volume has one file
+ * per track. What separates them is that those are QuickTime reference files with
+ * dataEOF = 0 (Phase 0, P3), so the discriminator is having a file with actual bytes
+ * in it - which is also exactly what this phase needs. Testing for the thing we need,
+ * rather than for a proxy, means there is nothing left to be wrong about. */
+static short FindCDDataVolume(Str255 volName, FSSpec *spec, long *sizeOut)
 {
     HParamBlockRec hpb;
     short          index;
+    char           cname[64];
 
     for (index = 1; index < 32; index++) {
         memset(&hpb, 0, sizeof(hpb));
@@ -370,10 +462,15 @@ static short FindCDDataVolume(Str255 volName)
         hpb.volumeParam.ioNamePtr  = volName;
         hpb.volumeParam.ioVolIndex = index;
         if (PBHGetVInfoSync(&hpb) != noErr) break;
-        /* Mounted off our CD driver, and it must be a real filesystem: the
-         * audio-track pseudo-volume has files whose data forks are all zero. */
-        if (hpb.volumeParam.ioVDRefNum == gP.cd.refNum)
+        if (hpb.volumeParam.ioVDRefNum != gP.cd.refNum) continue;
+
+        if (FindReadableFile(hpb.volumeParam.ioVRefNum, spec, sizeOut))
             return hpb.volumeParam.ioVRefNum;
+
+        CDPToC(volName, cname, sizeof(cname));
+        CDLogf("  '%s' is on our CD driver but has no file with any bytes in it; "
+               "that is the audio-track volume, not the data one. Looking further.",
+               cname);
     }
     volName[0] = 0;
     return 0;
@@ -442,7 +539,7 @@ static void PhaseD(long playLBA, const char *trackLabel)
 
     CDLogf("=== PHASE D: read the DATA track while audio plays ===");
 
-    vRefNum = FindCDDataVolume(volName);
+    vRefNum = FindCDDataVolume(volName, &spec, &fileSize);
     if (vRefNum == 0) {
         CDLogf("  no data volume on this disc, so there is nothing to contend with.");
         CDLogf("  ⇒ PHASE D SKIPPED. This needs a MIXED-MODE disc: track 1 data,");
@@ -452,11 +549,6 @@ static void PhaseD(long playLBA, const char *trackLabel)
     }
     CDPToC(volName, cname, sizeof(cname));
     CDLogf("  data volume '%s' (vRefNum=%d) is on our CD driver", cname, vRefNum);
-
-    if (!FindReadableFile(vRefNum, &spec, &fileSize)) {
-        CDLogf("  ⇒ PHASE D SKIPPED: no readable file in the root of '%s'.", cname);
-        return;
-    }
     CDPToC(spec.name, cname, sizeof(cname));
     CDLogf("  will read '%s' (%ld bytes) in %ld KB chunks", cname, fileSize,
            kPhaseDChunk / 1024L);
@@ -650,6 +742,7 @@ static void RunProbe(void)
         CDLogf("  ⇒ AudioTrackSearch best err=%d", err);
 
         CDLogf("--- AudioPlay ---");
+        SnapshotPumpBeforePlay();
         err = TryAudioCall(kcsAudioPlay, kCDPosTypeMSF,
                            m, s, f, trk, false, "AudioPlay/MSF");
         if (err == noErr) {

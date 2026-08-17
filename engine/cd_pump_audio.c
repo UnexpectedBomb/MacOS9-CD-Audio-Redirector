@@ -58,8 +58,7 @@ static volatile Boolean   gPlaying  = false;
 static Boolean            gPaused   = false;
 static volatile long      gUnderruns = 0;
 static long               gNextLBA  = 0, gEndLBA = 0;
-static short              gSavedBlockSize = 512;
-static Boolean            gBlockSizeTaken = false;
+static short              gNormalBlockSize = 0;   /* the drive's own, captured once */
 
 static CDTOC              gTOC;
 
@@ -206,50 +205,66 @@ OSErr CDPumpInit(short refNum, short driveNum)
 
 /* ---- block size -----------------------------------------------------------
  *
- * ⚠ READ THE CALL SITES BEFORE BELIEVING ANY SUMMARY OF THIS. The block size is
- * taken ONCE when playback starts and given back only on stop, on reaching the end
- * of the range, or on a failure to start. It is NOT taken and restored around each
- * refill. So the drive sits at 2352 for the WHOLE of a piece of music, which may be
- * minutes, and not for the ~200 ms of a read.
+ * ★★★ THE BLOCK SIZE BELONGS TO THE READ, NOT TO PLAYBACK. 2026-08-17.
  *
- * That is the exposure phase D of CDPlayProbe hunts: a mixed-mode game reading level
- * data off track 1 while its music plays goes through this same drive, and the File
- * Manager expects 512. Every measurement so far has been on an audio CD, where
- * nothing else reads the disc, so the window has never been tested.
+ * It used to be taken once when playback started and given back only on stop, so the
+ * drive sat at 2352 for the whole of a piece of music, which may be minutes. The File
+ * Manager expects 512. On a plain audio CD nothing else reads the disc, so that never
+ * mattered and thirty hardware runs said nothing about it.
  *
- * The earlier design in the retired engine/cd_engine_audio.c did take and restore
- * per refill, which narrows the window without closing it. It is not obviously the
- * better trade here: it puts two extra Control calls on the audio-critical path at
- * roughly 10 Hz, and the ship gate cares more about the music starting and not
- * breaking up than about a race nobody has yet observed. Closing it properly is the
- * ATA route via the 'dvrf' handle.
+ * Phase D on a real mixed-mode disc exercised it for the first time and **crashed the
+ * machine**: a bus error inside _DeleteMenu following a garbage pointer, in an app
+ * that never calls DeleteMenu, on roughly the second 32 KB File Manager read of a
+ * 70 MB file taken while the pump was streaming. That is a memory-corruption
+ * signature, not a menu bug, and a real game reading level data off track 1 does
+ * exactly the same reads. See FINDINGS 2026-08-17.
  *
- * ⇒ Do not "fix" this speculatively. Run phase D on a mixed-mode disc first and let
- * it say whether the reads actually come back wrong.
+ * ★ WHY TAKE-AND-RESTORE PER READ ACTUALLY CLOSES THIS, rather than just narrowing it.
+ * Mac OS 9 is cooperatively scheduled. A game's File Manager read runs at task level,
+ * and so does ours. Another task cannot be scheduled in the middle of a sequence that
+ * never yields. So as long as set-2352, read, restore contains no yield, no WaitNext-
+ * Event, no logging and no allocation, a task-level reader cannot observe 2352 at all.
+ * The old design held the wrong size precisely ACROSS the yields, which is the only
+ * time the game gets to run: it was not so much a race as a guarantee.
+ *
+ * ⚠ What this does NOT cover, stated so nobody reads more into it than is there:
+ * asynchronous or interrupt-time completions, and any File Manager work that runs at
+ * deferred-task level, could still observe the window. Closing that needs the ATA
+ * route via the 'dvrf' handle, which bypasses the shared block size entirely.
+ *
+ * The cost is two extra Control calls per refill at roughly 10 Hz. Measured against a
+ * TOC read of three Control calls coming in around one tick, that is negligible, and
+ * the underrun counter is the check.
  */
 
-static void TakeBlockSize(void)
+/* The drive's own block size, captured once and reused. Captured rather than assumed
+ * because the value is the drive's, not ours; guarded against capturing 2352 itself,
+ * which would make "restore" a no-op and hide the whole problem. */
+static void CaptureNormalBlockSize(void)
 {
     short p[11];
     int   i;
-    if (gBlockSizeTaken) return;
-    if (CDStatusCall(gRefNum, kcsGetBlockSize, p, sizeof(p)) == noErr && p[0] > 0)
-        gSavedBlockSize = p[0];
+
+    if (gNormalBlockSize > 0) return;
     for (i = 0; i < 11; i++) p[i] = 0;
-    p[0] = kCDDASectorBytes;
-    (void)CDControlCall(gRefNum, kcsChangeBlockSize, p, sizeof(p), NULL, 0);
-    gBlockSizeTaken = true;
+    if (CDStatusCall(gRefNum, kcsGetBlockSize, p, sizeof(p)) == noErr &&
+        p[0] > 0 && p[0] != kCDDASectorBytes)
+        gNormalBlockSize = p[0];
+    else
+        gNormalBlockSize = 512;
 }
 
-static void GiveBackBlockSize(void)
+/* Deliberately silent and allocation-free: it runs between the two halves of the
+ * no-yield sequence in RefillOnce, and anything that could yield here would reopen
+ * exactly the window this exists to close. */
+static void SetBlockSize(short size)
 {
     short p[11];
     int   i;
-    if (!gBlockSizeTaken) return;
+
     for (i = 0; i < 11; i++) p[i] = 0;
-    p[0] = gSavedBlockSize;
+    p[0] = size;
     (void)CDControlCall(gRefNum, kcsChangeBlockSize, p, sizeof(p), NULL, 0);
-    gBlockSizeTaken = false;
 }
 
 /* Lean read: no logging, because this runs inside the refill loop. */
@@ -284,7 +299,15 @@ static long RefillOnce(void)
     if (gNextLBA + sectors > gEndLBA) sectors = gEndLBA - gNextLBA;
     if (sectors <= 0) return 0;
 
+    /* ★ THE NO-YIELD SEQUENCE. Nothing between these three statements may yield,
+     * log, allocate or call the File Manager. On a cooperative system that is what
+     * makes the wrong block size unobservable to another task rather than merely
+     * unlikely. If you add anything here, you have reopened the crash. */
+    CaptureNormalBlockSize();
+    SetBlockSize(kCDDASectorBytes);
     got = ReadSectors(gNextLBA, gPCM + idx, sectors);
+    SetBlockSize(gNormalBlockSize);
+
     if (got <= 0) return 0;
     gWriteOff += got;
     gNextLBA  += got / kCDDASectorBytes;
@@ -304,7 +327,8 @@ void CDPumpStop(void)
     }
     gPlaying = false;
     gPaused  = false;
-    GiveBackBlockSize();
+    /* Nothing to give back: the block size is restored inside every refill, so
+     * outside a refill the drive is already at its own size. */
     /* An explicit stop really does mean stopped: back to the driver's own answers. */
     if (gPub != NULL) { gPub->playState = 0; gPub->posSeq++; }
 }
@@ -471,22 +495,18 @@ static void RefreshDriveNumber(void)
 
 static void EnsureTOC(void)
 {
-    Boolean retake   = gBlockSizeTaken;
     Boolean hadValid = gTOC.valid;
 
     RefreshDriveNumber();
 
-    /* Read at the drive's normal block size. ReadTOC is a Control call and ought to
-     * be independent of it, but every TOC read that has ever succeeded on this
-     * hardware happened at 512, and two extra Control calls are cheap insurance on a
-     * machine with no debugger. On the first play nothing is taken, so this is free. */
-    if (retake) GiveBackBlockSize();
-
+    /* The block size no longer needs restoring around this. It is now set and put back
+     * inside RefillOnce's no-yield sequence, so outside that sequence the drive is
+     * always at its normal size and the TOC read gets the 512 that every successful
+     * read on this hardware has had. The old dance here existed only because playback
+     * used to hold 2352 across everything. */
     CDLogSetQuiet(true);
     CDReadTOC(gRefNum, &gTOCScratch);
     CDLogSetQuiet(false);
-
-    if (retake) TakeBlockSize();
 
     if (!gTOCScratch.valid) {
         /* Keep a TOC we already trust: a transient read failure must not throw away
@@ -616,12 +636,11 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     }
     CDLogf("  pump: inside track %d (starts at LBA %ld)", gCurTrack, gTrackStartLBA);
 
-    TakeBlockSize();
     while ((gWriteOff - gReadOff) < gPCMBytes)
         if (RefillOnce() <= 0) break;
     CDLogf("  pump: pre-roll %ld bytes", gWriteOff);
 
-    if (gWriteOff == 0) { GiveBackBlockSize(); return ioErr; }
+    if (gWriteOff == 0) return ioErr;
 
     gPlaying = true;
     for (i = 0; i < 2; i++) {
@@ -642,7 +661,7 @@ OSErr CDPumpPlay(const unsigned char *csParam)
 
     err = SndPlayDoubleBuffer(gChan, (SndDoubleBufferHeaderPtr)&h);
     CDLogf("  pump: SndPlayDoubleBuffer err=%d", err);
-    if (err != noErr) { gPlaying = false; GiveBackBlockSize(); }
+    if (err != noErr) gPlaying = false;
     PublishCursor();
     return err;
 }
@@ -673,7 +692,6 @@ void CDPumpIdle(void)
                "and reporting completed");
         gPlaying = false;
         gPaused  = false;
-        GiveBackBlockSize();
         PublishCursor();            /* -> playState 3, position held */
         return;
     }

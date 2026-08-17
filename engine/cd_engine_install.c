@@ -359,11 +359,24 @@ afterDrain:
     pub->pumpAlive = 0;
 }
 
+/* ★ THE BANNER IS THE BUILD'S NAME, TAKEN FROM CMAKE, NEVER HAND-MAINTAINED.
+ *
+ * It used to be a literal here. On 2026-08-17 the CMake target was bumped to v11 and
+ * this string was not, so a run of v11 announced itself as v10 in the log while the
+ * filename said v11. The version stamp exists precisely so you can tell what ran, and
+ * a stamp that can drift from the artifact is worse than none: it lies with authority.
+ *
+ * CD_ARTIFACT_NAME is defined by the CMakeLists from $<TARGET_PROPERTY:NAME>, so it is
+ * the target name itself and cannot disagree with the file the user copies. If it is
+ * missing the build FAILS rather than producing an unlabelled binary. */
+#ifndef CD_ARTIFACT_NAME
+#error "CD_ARTIFACT_NAME is not defined. The CMakeLists must pass the target name."
+#endif
+
+#define kVersionString  CD_ARTIFACT_NAME
 #if CD_FACELESS
-#define kVersionString  "CD Audio Redirector v10"
 #define kLogFileName    "\pCD Audio Redirector Log"
 #else
-#define kVersionString  "CDPump v14"
 #define kLogFileName    "\pCD Engine Log"
 #endif
 #define kEnginePEFType  FOUR_CHAR_CODE('cdPF')
