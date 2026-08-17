@@ -41,6 +41,10 @@
 #define kDBufBytes      (kDBufFrames * 4)
 #define kRingSeconds    2
 #define kChunkSectors   32                  /* 75264 bytes per read */
+/* A bound on one pre-roll burst, not a target: the burst stops as soon as the ring is
+ * full. Generous enough that it can never be what limits the pre-roll - a 2 s ring at
+ * 75264 bytes per read needs about five. */
+#define kPreRollMaxRefills 64
 
 /* ---- state ---------------------------------------------------------------- */
 
@@ -299,19 +303,46 @@ static long RefillOnce(void)
     if (gNextLBA + sectors > gEndLBA) sectors = gEndLBA - gNextLBA;
     if (sectors <= 0) return 0;
 
-    /* ★ THE NO-YIELD SEQUENCE. Nothing between these three statements may yield,
-     * log, allocate or call the File Manager. On a cooperative system that is what
-     * makes the wrong block size unobservable to another task rather than merely
-     * unlikely. If you add anything here, you have reopened the crash. */
-    CaptureNormalBlockSize();
-    SetBlockSize(kCDDASectorBytes);
+    /* ⚠ ASSUMES THE CALLER HAS ALREADY SET 2352 AND WILL RESTORE IT. Never call this
+     * directly; call RefillBurst, which owns that. */
     got = ReadSectors(gNextLBA, gPCM + idx, sectors);
-    SetBlockSize(gNormalBlockSize);
-
     if (got <= 0) return 0;
     gWriteOff += got;
     gNextLBA  += got / kCDDASectorBytes;
     return got;
+}
+
+/* ★★ THE NO-YIELD SEQUENCE. Set 2352, do up to maxRefills reads, put it back.
+ *
+ * The safety property is "no yield between setting the block size and restoring it",
+ * NOT "one read per set" - so the whole burst can live inside one pair. Nothing in
+ * here may yield, log, allocate or touch the File Manager. RefillOnce and ReadSectors
+ * are silent and allocation-free precisely so this holds. If you add a log line to
+ * either of them, you have reopened the crash of 2026-08-17.
+ *
+ * WHY A BURST RATHER THAN PER-READ: taking and restoring around every single read
+ * defeated the drive's read-ahead. Run A measured a 116-underrun burst about 4.8 s
+ * into the first, COLD play - two seconds of audio skipped - where the previous build
+ * had zero. This project already knew cold reads run at 153 KB/s against a 176 KB/s
+ * real-time requirement, so the 2 s pre-roll could not cover the deficit. Bursting
+ * cuts the block-size changes by up to 4x while playing and about 5x during the cold
+ * pre-roll, and gives up nothing: a task-level reader still cannot observe 2352.
+ *
+ * Returns total bytes added to the ring. RefillOnce returning 0 means the ring is full
+ * or the range is finished, and both are correct reasons to stop early. */
+static long RefillBurst(long maxRefills)
+{
+    long total = 0;
+
+    CaptureNormalBlockSize();
+    SetBlockSize(kCDDASectorBytes);
+    while (maxRefills-- > 0) {
+        long got = RefillOnce();
+        if (got <= 0) break;
+        total += got;
+    }
+    SetBlockSize(gNormalBlockSize);
+    return total;
 }
 
 /* ---- transport ------------------------------------------------------------ */
@@ -636,8 +667,9 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     }
     CDLogf("  pump: inside track %d (starts at LBA %ld)", gCurTrack, gTrackStartLBA);
 
-    while ((gWriteOff - gReadOff) < gPCMBytes)
-        if (RefillOnce() <= 0) break;
+    /* One burst for the whole pre-roll. kPreRollMaxRefills is a generous bound, not a
+     * target: RefillBurst stops as soon as the ring is full or the range ends. */
+    (void)RefillBurst(kPreRollMaxRefills);
     CDLogf("  pump: pre-roll %ld bytes", gWriteOff);
 
     if (gWriteOff == 0) return ioErr;
@@ -695,8 +727,7 @@ void CDPumpIdle(void)
         PublishCursor();            /* -> playState 3, position held */
         return;
     }
-    while (guard-- > 0)
-        if (RefillOnce() <= 0) break;
+    (void)RefillBurst(guard);
 }
 
 void CDPumpStats(Boolean *playing, long *underruns, long *delivered)
