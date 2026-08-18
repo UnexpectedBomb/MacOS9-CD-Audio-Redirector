@@ -178,6 +178,12 @@ typedef struct {
     short    firstTrack, lastTrack;
     short    audioCount;
     short    trackCount;            /* entries filled in below                */
+    /* ★ The lead-out, in LBA. Read by every TOC read and previously only LOGGED,
+     * which let DecodePos run a play range off the end of the disc: the LAST track
+     * has no successor to clip against, so it fell back to an 80-minute range and
+     * on 2026-08-17 resolved 223287..583287 - about 342,000 sectors past the end.
+     * 0 if the lead-out could not be read. */
+    long     leadOutLBA;
     struct {
         short    number;
         Boolean  isData;

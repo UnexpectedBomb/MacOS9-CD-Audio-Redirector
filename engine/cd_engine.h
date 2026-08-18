@@ -64,6 +64,13 @@
 #define kStallSiteReadTOC       5   /* the TOC re-read inside EnsureTOC            */
 #define kStallSiteAudioStop     6   /* our own AudioStop to the driver             */
 #define kStallSiteLogWrite      7   /* FSWrite + FlushVol of a log line            */
+#define kStallSiteSndPlay       8   /* SndPlayDoubleBuffer, at the start of a play */
+/* ★ Site 9 is not a call at all - it is the gap between successive passes of the
+ * pump's own event loop. If THAT is the worst site while every call inside it is
+ * short, the pump was not blocked, it was not being SCHEDULED, and the problem is
+ * outside our code entirely. On 2026-08-17 the worst call was 2.6 s against a 31.4 s
+ * stall, so this is the measurement that question now needs. */
+#define kStallSiteLoopGap       9   /* pump event loop not scheduled               */
 
 /* Half a second. Long enough that ordinary calls never register, short enough that
  * anything a listener could notice does. */

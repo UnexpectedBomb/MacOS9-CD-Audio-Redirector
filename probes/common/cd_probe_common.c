@@ -704,14 +704,21 @@ void CDReadTOC(short refNum, CDTOC *toc)
            toc->firstTrack, toc->lastTrack, p[0], p[1], enc);
     CDProgressSay("TOC: tracks %d..%d", toc->firstTrack, toc->lastTrack);
 
+    toc->leadOutLBA = 0;
     err = CDReadTOCAction(refNum, kTOCActionLeadOut, false,
                           buf, sizeof(buf), &enc);
     if (err != noErr)
         err = CDReadTOCAction(refNum, kTOCActionLeadOut, true,
                               buf, sizeof(buf), &enc);
-    if (err == noErr)
-        CDLogf("  ReadTOC lead-out: %02d:%02d:%02d enc=%s",
-               kBCDToBin(p[0]), kBCDToBin(p[1]), kBCDToBin(p[2]), enc);
+    if (err == noErr) {
+        /* KEEP it, do not merely print it. See CDTOC.leadOutLBA. */
+        toc->leadOutLBA = CDMSFToLBA(kBCDToBin(p[0]), kBCDToBin(p[1]),
+                                     kBCDToBin(p[2]));
+        if (toc->leadOutLBA < 0) toc->leadOutLBA = 0;
+        CDLogf("  ReadTOC lead-out: %02d:%02d:%02d enc=%s  (lba=%ld)",
+               kBCDToBin(p[0]), kBCDToBin(p[1]), kBCDToBin(p[2]), enc,
+               toc->leadOutLBA);
+    }
 
     /* Per-track addresses. csParam+2 = buffer address (long), +6 = buffer size,
      * +8 = starting track in BCD. The size MUST be a word: a long at +6 would

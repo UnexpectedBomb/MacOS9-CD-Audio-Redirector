@@ -260,6 +260,13 @@ static void NoteStall(long site, long startTicks)
     NoteStallElapsed(site, TickCount() - startTicks);
 }
 
+/* Exported so the pump's event loop, which lives in cd_engine_install.c, can report
+ * its own scheduling gaps through the same recorder. */
+void CDPumpNoteStall(long site, long elapsedTicks)
+{
+    NoteStallElapsed(site, elapsedTicks);
+}
+
 /* ★★ SITE 7: the log write, which goes to the STARTUP DISC rather than the CD.
  *
  * This is the one call the pump makes on a different drive from everything else, and it
@@ -541,6 +548,20 @@ static Boolean DecodePos(const unsigned char *cp, long *startLBA, long *endLBA)
     for (i = 0; i < gTOC.trackCount; i++)
         if (gTOC.track[i].lba > lba && gTOC.track[i].lba < *endLBA)
             *endLBA = gTOC.track[i].lba;
+
+    /* ★ CLAMP TO THE LEAD-OUT. The LAST track has no successor to clip against, so
+     * the 80-minute fallback above ran the range off the end of the disc: on
+     * 2026-08-17 a system-issued play of track 8 resolved to 223287..583287, about
+     * 342,000 sectors past a lead-out at ~241,000. Every read past the end is a
+     * failed read, and the pump would grind through them instead of reporting the
+     * track finished. */
+    if (gTOC.leadOutLBA > 0 && *endLBA > gTOC.leadOutLBA)
+        *endLBA = gTOC.leadOutLBA;
+    if (*endLBA <= *startLBA) {
+        CDLogf("  pump: %ld is at or past the lead-out (%ld); nothing to play",
+               *startLBA, gTOC.leadOutLBA);
+        return false;
+    }
     return true;
 }
 
@@ -788,7 +809,11 @@ OSErr CDPumpPlay(const unsigned char *csParam)
     h.dbhDoubleBack    = gDBackUPP;
     h.dbhFormat        = k16BitLittleEndianFormat;      /* 'sowt' */
 
-    err = SndPlayDoubleBuffer(gChan, (SndDoubleBufferHeaderPtr)&h);
+    {
+        long t0 = TickCount();
+        err = SndPlayDoubleBuffer(gChan, (SndDoubleBufferHeaderPtr)&h);
+        NoteStall(kStallSiteSndPlay, t0);
+    }
     CDLogf("  pump: SndPlayDoubleBuffer err=%d", err);
     if (err != noErr) gPlaying = false;
 

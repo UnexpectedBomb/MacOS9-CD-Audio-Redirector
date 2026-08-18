@@ -83,6 +83,7 @@ extern void  CDPumpPause(Boolean pause);
 extern void  CDPumpIdle(void);
 extern void  CDPumpStats(Boolean *playing, long *underruns, long *delivered);
 extern void  CDPumpSetPublic(CDEnginePublic *pub);
+extern void  CDPumpNoteStall(long site, long elapsedTicks);
 
 #if CD_FACELESS
 /* With no window and no menu there is nothing to click, so the quit Apple event is the
@@ -121,6 +122,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     EventRecord evt;
     long        reported = -1;
     long        lastBeat = 0;       /* playback heartbeat, see below */
+    long        lastPass = 0;       /* ★ site 9: was this loop scheduled at all? */
 
     if (pub == NULL) return;
     /* Start level with the producer: anything posted before the pump existed was never
@@ -130,9 +132,27 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     CDPumpSetPublic(pub);        /* so the pump can publish the playback cursor */
 
     CDLogf("=== PUMP RUNNING. Click or press a key to stop and quit. ===");
-    CDProgressSay("pump running - now run CDPlayProbe_v2 and LISTEN");
+    /* No version number here: the probe's name changes every build and this line has
+     * been stale for a dozen of them. */
+    CDProgressSay("pump running - now run the CD play probe and LISTEN");
 
     for (;;) {
+        /* ★ SITE 9 - THE GAP BETWEEN PASSES OF THIS LOOP.
+         *
+         * Not a call, and that is the point. Every synchronous call the pump makes is
+         * timed individually, and on 2026-08-17 the worst of them was 2.6 s against a
+         * 31.4-second stall in which the ring drained and 119 buffers of silence went
+         * out. So the pump was not BLOCKED in anything of ours - it was not being
+         * SCHEDULED. This measures that directly: if site 9 wins with ~31 s while every
+         * call inside it stays short, the answer is that something outside both our
+         * processes owns the machine, and we stop auditing our own code. */
+        {
+            long now = TickCount();
+            if (lastPass != 0 && (now - lastPass) >= kStallThresholdTicks)
+                CDPumpNoteStall(kStallSiteLoopGap, now - lastPass);
+            lastPass = now;
+        }
+
         /* ★ DRAIN EVERY PENDING REQUEST, not just the newest one.
          *
          * The old code read whichever request happened to be in the single mailbox slot
@@ -343,7 +363,8 @@ afterDrain:
         if (pub->stallCount > 0)
             CDLogf("  ★ WORST STALL: site %ld for %ld ticks (%ld.%ld s), %ld call(s) "
                    "over threshold. Sites: 1 GetBlockSize, 2 SetBlock2352, 3 PBRead, "
-                   "4 RestoreBlock, 5 ReadTOC, 6 AudioStop, 7 log write.",
+                   "4 RestoreBlock, 5 ReadTOC, 6 AudioStop, 7 log write, "
+                   "8 SndPlayDoubleBuffer, 9 PUMP LOOP NOT SCHEDULED.",
                    pub->stallSite, pub->stallTicks, pub->stallTicks / 60,
                    (pub->stallTicks % 60) * 10 / 60, pub->stallCount);
         else
