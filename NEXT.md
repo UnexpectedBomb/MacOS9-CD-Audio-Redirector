@@ -34,6 +34,44 @@ window; it does not close it. Three requests inside one pump pass would still lo
 only a candidate if it can be shown to make the loss impossible for the call patterns a real
 game issues, or if it carries a counter that makes any loss visible.
 
+## ⚠ 2026-08-17 — THE TEST MACHINE WAS REBUILT. WHAT SURVIVED AND WHAT DID NOT
+
+The Mini's boot volume was lost and the machine reinstalled from scratch. Sequence: the Warcraft
+installer hung, the machine was force-powered-off, and it would not boot afterwards. Recovery
+established the drive answered small reads near the start (partition map and volume name read fine
+over FireWire target disk mode, and OS 9 offered to initialise it) but stalled on every sustained
+read - Open Firmware `dir hd:\`, `fsck_hfs` on the raw device, and a `dd` image all hung. That
+pattern points at failing media rather than catalog damage alone. The volume was wiped rather than
+recovered, deliberately: nothing on it was irreplaceable.
+
+**Lost: the `CD Audio Redirector Log` from the installer hang.** That is the only artifact gone.
+Every log up to and including Run C and the v15 re-run is on the Pi, and all source is in git.
+
+**NOT lost, and still the open question: the ~31 second stall.** Two stalls per boot, 31.2 s and
+31.6 s, always the first play of a probe run, both applications frozen in lockstep. `CDPump_v19` /
+`CDAudioRedirector_v15` carry the stall recorder built for exactly this and it has never been run.
+
+★ **A candidate that got stronger during the recovery, and was never tested:** both the pump and the
+probe write every log line with `FSWrite` + `FlushVol` to the hard disk. A drive doing ~30 second
+ATA retries on marginal sectors would freeze both processes at the same instant for the same
+duration, whatever the CD was doing - which is precisely the observation that none of the three
+CD-side theories explained. The disk on that machine has now demonstrably been unwell. ⚠ The log
+write is site 7 in the stall recorder and is the ONE site still not instrumented, because it lives
+in shared probe code. Wire it up before the next run; if the failing disk was the cause, a rebuilt
+machine may simply not reproduce the stall at all, and that absence would be the answer.
+
+⚠ **Worth revisiting: the logger flushes on every single line.** That is deliberate - a hang must
+never eat the line that says what we were doing - but it means there is always an open, dirty file
+while the extension runs, which makes a forced power-off more damaging than it needs to be, and it
+puts a synchronous disk write on the pump's critical path. Buffering with a periodic flush would
+lose very little diagnostically.
+
+**To rebuild the test machine:** the seven current artifacts are on the Pi share
+(`CDAudioRedirector_v15`, `CDPump_v19`, `CDPlayProbe_v16`, `CDTraceRead_v8`, `CDRecon_v2`, plus the
+`CDAudioRedirector_v1` + `CDPlayProbe_v3` control pair). The patched Mac OS ROM for the Mini is a
+separate matter and lives with the USB2 work - sort that out before expecting USB2 or the VBL fix to
+behave.
+
 ## ★★★ 2026-08-11 — THE POSITION ENCODING WAS WRONG, AND BOTH HALVES AGREED ON IT
 
 Read this before anything else below; it invalidates several older conclusions.
