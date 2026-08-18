@@ -53,8 +53,11 @@
  * stopsSuppressed appended, for stopping the driver's own transport. 8 = the stall
  * recorder (stallSite, stallTicks, stallCount). 9 = the silent-playback watchdog
  * (dbCalls, silentPlays, silentPlayTicks) - a version-8 reader would miss exactly the
- * fields that distinguish "playing" from "actually making sound". */
-#define kEngineVersion  9
+ * fields that distinguish "playing" from "actually making sound". 10 = idleStatusParam,
+ * the driver's own answer to an AudioStatus asked while we are idle - the thing a game
+ * reads when it decides whether CD audio works, and the one call neither the trace ring
+ * nor the counters capture, because they record the REQUEST and not the REPLY. */
+#define kEngineVersion  10
 
 /* Which synchronous call blocked. Deliberately every candidate rather than the one I
  * currently suspect, because the last three suspicions were wrong. */
@@ -546,6 +549,21 @@ typedef struct {
     volatile long   dbCalls;         /* doubleback invocations, from interrupt level */
     volatile long   silentPlays;
     volatile long   silentPlayTicks;
+
+    /* ★ WHAT THE DRIVER TELLS AN IDLE CALLER, engine version 10 (2026-08-18).
+     *
+     * `callCount`, `audioCallCount` and the trace ring already record every Control call
+     * unconditionally, so a game's polling has always been visible - we simply never
+     * read the ring after a game session. This is the ONE thing none of them capture:
+     * the driver's own ANSWER. The ring stores csParam as it arrives, before chaining.
+     *
+     * A game deciding whether CD audio is usable reads that answer, and on the mini it
+     * apparently decides no while the same game on the MDD plays music. So capture the
+     * driver's reply to the first AudioStatus asked while the pump is IDLE - which is
+     * exactly the state a game finds at launch - and let the pump print it at task
+     * level. The handler must never log. */
+    volatile unsigned char idleStatusParam[16];
+    volatile long   idleStatusCaptured;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that

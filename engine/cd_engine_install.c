@@ -123,6 +123,7 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     long        reported = -1;
     long        lastBeat = 0;       /* playback heartbeat, see below */
     long        lastPass = 0;       /* ★ site 9: was this loop scheduled at all? */
+    long        lastCounters = 0;   /* ★ periodic dump, see below */
 
     if (pub == NULL) return;
     /* Start level with the producer: anything posted before the pump existed was never
@@ -137,6 +138,41 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
     CDProgressSay("pump running - now run the CD play probe and LISTEN");
 
     for (;;) {
+        /* ★★ DUMP THE COUNTERS PERIODICALLY, NOT ONLY AT SHUTDOWN.
+         *
+         * Every counter this project added lived in the end-of-session summary, and that
+         * summary needs the quit Apple event to arrive - which means shutting down, then
+         * booting again, then copying. In practice the log gets copied while the machine
+         * is still up, so the summary is absent and the run is half unreadable. It has cost
+         * several rounds, including three Warcraft sessions where the one line that
+         * mattered was the one we did not have.
+         *
+         * So: a compact line every 30 seconds. The log is then useful however it ends,
+         * including after a crash or a forced restart. callCount and audioCallCount are
+         * the important pair - they count EVERY Control call and every audio call the
+         * handler saw, unconditionally, so they answer "is the caller talking to us at
+         * all" without needing the trace ring. */
+        if (TickCount() - lastCounters >= 1800) {
+            lastCounters = TickCount();
+            CDLogf("  counters: ctl=%ld audio=%ld | req %ld/%ld drop=%ld | synth %ld/%ld "
+                   "| db=%ld silent=%ld(%ldt) | stall site=%ld %ldt n=%ld | posUnk=%ld "
+                   "unres=%ld",
+                   pub->callCount, pub->audioCallCount,
+                   pub->reqRead, pub->reqWrite, pub->reqDropped,
+                   pub->synthStatusCount, pub->synthReadQCount,
+                   pub->dbCalls, pub->silentPlays, pub->silentPlayTicks,
+                   pub->stallSite, pub->stallTicks, pub->stallCount,
+                   pub->posTypeUnknown, pub->playResolveFails);
+            if (pub->idleStatusCaptured) {
+                CDLogf("  ★ driver's own AudioStatus answer while we were idle: "
+                       "%02X %02X %02X %02X %02X %02X %02X %02X",
+                       pub->idleStatusParam[0], pub->idleStatusParam[1],
+                       pub->idleStatusParam[2], pub->idleStatusParam[3],
+                       pub->idleStatusParam[4], pub->idleStatusParam[5],
+                       pub->idleStatusParam[6], pub->idleStatusParam[7]);
+            }
+        }
+
         /* ★ SITE 9 - THE GAP BETWEEN PASSES OF THIS LOOP.
          *
          * Not a call, and that is the point. Every synchronous call the pump makes is

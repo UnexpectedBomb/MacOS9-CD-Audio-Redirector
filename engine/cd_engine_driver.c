@@ -154,6 +154,27 @@ OSErr CDEngineControl(ParmBlkPtr pb, DCtlPtr dce)
      * play-state byte are touched; the rest of the original's answer is left alone.
      *
      * Interrupt-safe: reads of the published cursor and plain stores into csParam. */
+    /* ★ CAPTURE THE DRIVER'S OWN ANSWER TO AN IDLE AudioStatus, once.
+     *
+     * callCount, audioCallCount and the trace ring already see every call, so a game's
+     * polling was never invisible - it was merely never read back after a game session.
+     * What none of them hold is the REPLY: the ring copies csParam on the way IN.
+     *
+     * A game at launch finds the pump idle and asks how the CD is doing. Whatever the
+     * driver says is what it bases its decision on, and on the mini that decision comes
+     * out as "no music" while the MDD plays. So chain, keep a copy of the answer, and
+     * return it untouched. Plain stores, no logging: this may be interrupt time. */
+    if (pb != NULL && gPub != NULL && gPub->patched && gPub->playState == 0 &&
+        !gPub->idleStatusCaptured && gOrigCtl != NULL &&
+        ((CntrlParam *)pb)->csCode == kcsAudioStatus) {
+        unsigned char *cp0 = (unsigned char *)((CntrlParam *)pb)->csParam;
+        OSErr e0 = gOrigCtl(pb, dce);
+        int   k;
+        for (k = 0; k < 16; k++) gPub->idleStatusParam[k] = cp0[k];
+        gPub->idleStatusCaptured = 1;
+        return e0;
+    }
+
     if (pb != NULL && gPub != NULL && gPub->patched && gPub->playState != 0) {
         short cs = ((CntrlParam *)pb)->csCode;
 
