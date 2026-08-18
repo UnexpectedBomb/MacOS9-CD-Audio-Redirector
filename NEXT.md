@@ -34,6 +34,53 @@ window; it does not close it. Three requests inside one pump pass would still lo
 only a candidate if it can be shown to make the loss impossible for the call patterns a real
 game issues, or if it carries a counter that makes any loss visible.
 
+## ⛔ 2026-08-18 — WARCRAFT IS NOT A RED BOOK TITLE. READ THIS BEFORE PLANNING ANY WORK.
+
+**Warcraft: Orcs & Humans does not use the CD audio API at all, so this extension cannot
+fix it.** Measured, not inferred:
+
+- **Zero CD-driver Control calls from the game, on BOTH machines**, across full sessions -
+  traced with `CDAudioRedirector_v19` on the mini and `CDTraceOnly_v1` on the MDD. On the
+  MDD, the machine where its music WORKS, the whole 99-entry ring was 79 `accRun`, 13
+  `ReadTOC`, the 2 mount-time `AudioPlay`s from Audio CD Access, and four odds and ends.
+- **The MDD plays the game's music from an HDD copy with the drive empty.** The audio is
+  not on the disc in any form.
+- The game is three items: the 828 KB executable, `War Movies` (62 MB) and `War Data`
+  (26 MB). The `War Movies` files play SILENTLY in QuickTime Player on both machines, so
+  the game pairs silent video with audio it fetches itself.
+- On the mini, sound EFFECTS play and music/narration do not.
+
+⇒ The remaining Warcraft problem is the mini's sound driver, not CD audio. It has been
+handed off to the Mini-G4-Audio project:
+**`~/Developer/Mini-G4-Audio/HANDOFF-warcraft-game-audio.md`** carries the full evidence,
+the NINE hypotheses already killed, the live single-sound-channel hypothesis and the probe
+to test it. Do not re-derive any of it here.
+
+### What that leaves for THIS project
+
+The mechanism is proven on hardware and none of it is wasted:
+- the position encoding read out of `.AppleCD`'s own parser, and `err=0` from the driver
+  where every earlier attempt got `paramErr`
+- a mixed-mode TOC parsed correctly, DATA tracks refused
+- real CD-DA streamed to audible music on a machine with no analog wire
+- end-of-track landing on the boundary to the frame
+- 24 data reads during playback with zero corruption and zero mismatches
+
+⚠ **What it lacks is a confirmed game that issues `AudioPlay`.** No game ever has, in this
+project's entire history - every request we have serviced came from `CDPlayProbe` or from
+Audio CD Access probing at mount time. Before more engineering goes in, ASK JUBADUB
+(macos9lives topic 7829) what his "no music" symptom actually consists of. If it is the
+same silent-narration behaviour, the Red Book premise has never had a real test case, and
+that is the thing to establish first.
+
+⚠ Also still open and unexplained: the ~31 s stall, now measured as **site 9 - the pump's
+loop not being SCHEDULED**, with no call of ours exceeding 2.6 s. And the silent-playback
+case the watchdog was built for: at disc insertion the pump accepted a play, pre-rolled,
+got `noErr` from `SndPlayDoubleBuffer` and delivered ZERO bytes for 107 seconds.
+⇒ ★ Both may be the same thing as the Warcraft finding. If the mini can only run one sound
+channel, a pump that believes it is playing while nothing is consumed is exactly what you
+would see. **Check the audio project's channel-probe result before touching the pump.**
+
 ## ⚠ 2026-08-17 — THE TEST MACHINE WAS REBUILT. WHAT SURVIVED AND WHAT DID NOT
 
 The Mini's boot volume was lost and the machine reinstalled from scratch. Sequence: the Warcraft
