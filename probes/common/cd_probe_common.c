@@ -121,6 +121,22 @@ static short gLogVRef = 0;
 static short gLogLastErr = 0;    /* last FSWrite result; see CDLogDiag */
 static long  gLogWrites  = 0;    /* lines actually handed to FSWrite   */
 
+/* ★★ HOW LONG A LOG LINE TAKES TO REACH THE DISC. Added 2026-08-17.
+ *
+ * Every line is an FSWrite plus a FlushVol, synchronously, to the STARTUP disc. That
+ * makes this the one call in the pump's loop that touches a completely different drive
+ * from the CD - and it is the only candidate that explains the stall of 2026-08-17,
+ * where the pump AND the probe froze in lockstep for the same 31 seconds. Both write
+ * their log lines here. A hard disc doing 30-second ATA retries would stop both at the
+ * same instant, whatever the CD was doing.
+ *
+ * Kept here rather than in the pump because the write lives here, and exposed through
+ * CDLogWriteStats so the pump can publish it without this file needing to know the
+ * engine exists. */
+static long  gLogWorstTicks = 0;  /* slowest single write+flush seen        */
+static long  gLogSlowWrites = 0;  /* writes over kLogSlowWriteTicks         */
+#define kLogSlowWriteTicks 30     /* half a second; matches the pump's threshold */
+
 Boolean CDLogOpen(ConstStr255Param fileName)
 {
     short  vRefNum;
@@ -186,9 +202,28 @@ void CDLogf(const char *fmt, ...)
      * every pump log line with nothing anywhere saying so. The project has now been
      * bitten three times by a silently-dropped error (CDLogOpen, SetGestaltValue, and
      * this); the value is exposed through CDLogDiag. */
-    gLogLastErr = FSWrite(gLogRef, &len, buf);
-    gLogWrites++;
-    CDLogFlush();
+    {
+        /* Timed as ONE unit: the flush is the expensive half, and a caller who only
+         * saw the FSWrite would conclude the disc was fine. */
+        long t0 = TickCount();
+        long elapsed;
+
+        gLogLastErr = FSWrite(gLogRef, &len, buf);
+        gLogWrites++;
+        CDLogFlush();
+
+        elapsed = TickCount() - t0;
+        if (elapsed >= kLogSlowWriteTicks) {
+            gLogSlowWrites++;
+            if (elapsed > gLogWorstTicks) gLogWorstTicks = elapsed;
+        }
+    }
+}
+
+void CDLogWriteStats(long *worstTicks, long *slowWrites)
+{
+    if (worstTicks) *worstTicks = gLogWorstTicks;
+    if (slowWrites) *slowWrites = gLogSlowWrites;
 }
 
 void CDLogDiag(short *quietDepth, short *lastErr, long *writes)

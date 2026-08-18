@@ -81,6 +81,12 @@ void CDProgressClose(void);
  * Folder. Returns false if it could not be opened — worth surfacing, because a
  * silent logging failure on a volume whose System Folder is not writable turns
  * every later probe into a run with no evidence. */
+/* ★ The slowest single log write+flush seen, in ticks, and how many crossed half a
+ * second. The log write goes to the STARTUP disc, not the CD, which makes it the one
+ * suspect that explains two applications stalling in lockstep. See cd_engine.h's
+ * kStallSiteLogWrite. */
+void CDLogWriteStats(long *worstTicks, long *slowWrites);
+
 Boolean CDLogOpen(ConstStr255Param fileName);
 void    CDLogClose(void);
 void    CDLogFlush(void);

@@ -245,15 +245,43 @@ OSErr CDPumpInit(short refNum, short driveNum)
  * instead of costing another theory. Cheap by construction: two TickCount reads and a
  * compare. Keeps the WORST duration rather than the latest, because the 31-second one
  * is the whole question and a later 40-tick call must not overwrite it. */
-static void NoteStall(long site, long startTicks)
+static void NoteStallElapsed(long site, long elapsed)
 {
-    long elapsed = TickCount() - startTicks;
-
     if (elapsed < kStallThresholdTicks || gPub == NULL) return;
     gPub->stallCount++;
     if (elapsed > gPub->stallTicks) {
         gPub->stallTicks = elapsed;
         gPub->stallSite  = site;
+    }
+}
+
+static void NoteStall(long site, long startTicks)
+{
+    NoteStallElapsed(site, TickCount() - startTicks);
+}
+
+/* ★★ SITE 7: the log write, which goes to the STARTUP DISC rather than the CD.
+ *
+ * This is the one call the pump makes on a different drive from everything else, and it
+ * is the only candidate that explains the 2026-08-17 stall: the pump AND the probe both
+ * froze for the same 31 seconds, and the single thing they have in common is writing a
+ * log line here. A hard disc doing 30-second ATA retries stops both at once, whatever
+ * the CD is doing. None of the three CD-side theories ever accounted for that lockstep.
+ *
+ * The timing is done inside the logger, because that is where the write is; this only
+ * publishes it. Reported once per NEW WORST rather than per slow write, so stallCount
+ * stays dominated by the driver calls it was built to count - the log path contributes
+ * only a handful, and stallSite is what actually names the culprit. */
+static long gLastLogWorstReported = 0;
+
+static void PollLogWriteStalls(void)
+{
+    long worst = 0, slow = 0;
+
+    CDLogWriteStats(&worst, &slow);
+    if (worst > gLastLogWorstReported) {
+        gLastLogWorstReported = worst;
+        NoteStallElapsed(kStallSiteLogWrite, worst);
     }
 }
 
@@ -789,6 +817,7 @@ void CDPumpIdle(void)
     long guard = 4;
 
     PublishCursor();
+    PollLogWriteStalls();
 
     if (!gPlaying || gPaused) return;
 
