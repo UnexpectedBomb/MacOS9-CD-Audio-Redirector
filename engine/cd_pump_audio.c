@@ -61,6 +61,9 @@ static volatile long      gWriteOff = 0;    /* task level writes this only */
 static volatile Boolean   gPlaying  = false;
 static Boolean            gPaused   = false;
 static volatile long      gUnderruns = 0;
+/* Doubleback invocations, incremented at INTERRUPT level. Declared here, with the rest
+ * of the state, because PublishCursor reads it well before DoubleBack is defined. */
+static volatile long      gDbCalls   = 0;
 static long               gNextLBA  = 0, gEndLBA = 0;
 static short              gNormalBlockSize = 0;   /* the drive's own, captured once */
 
@@ -118,6 +121,7 @@ static void PublishCursor(void)
     relF = (gPlayStartLBA - gTrackStartLBA) + framesPlayed;
     if (relF < 0) relF = 0;
 
+    gPub->dbCalls     = gDbCalls;
     gPub->curTrack    = gCurTrack;
     gPub->curAbsFrame = absF;
     gPub->curRelFrame = relF;
@@ -133,6 +137,12 @@ static pascal void DoubleBack(SndChannelPtr chan, SndDoubleBufferPtr buf)
     long have;
 
     (void)chan;
+
+    /* ★ One plain increment, interrupt-safe, and it settles a question the other
+     * counters cannot: if this never rises while the pump thinks it is playing, the
+     * Sound Manager is not running our channel at all and SndPlayDoubleBuffer's noErr
+     * was meaningless. See kSilentPlayTicks in cd_engine.h. */
+    gDbCalls++;
 
     if (!gPlaying || gPCM == NULL) {
         buf->dbNumFrames = 0;
@@ -265,6 +275,65 @@ static void NoteStall(long site, long startTicks)
 void CDPumpNoteStall(long site, long elapsedTicks)
 {
     NoteStallElapsed(site, elapsedTicks);
+}
+
+/* ★★ THE SILENT-PLAYBACK WATCHDOG.
+ *
+ * "Playing, not paused, and nothing consumed" is the failure this project's ship gate
+ * exists to forbid, and on 2026-08-17 it happened for 107 seconds with every counter
+ * reading healthy: play accepted, 352800 bytes pre-rolled, SndPlayDoubleBuffer noErr,
+ * zero bytes delivered, zero underruns, no sound. It was invisible to every probe run
+ * because the probe issues its own play moments later and masks it.
+ *
+ * Zero delivered AND zero underruns together is the tell: the doubleback either copies
+ * bytes out or counts an underrun, so if neither moves it is not being called. dbCalls
+ * turns that inference into a measurement.
+ *
+ * This only REPORTS. It does not try to restart playback, because we do not yet know
+ * why the channel is not running and a blind retry would paper over the evidence. Make
+ * it visible first. */
+static long    gLastReadOff       = -1;
+static long    gLastProgressTicks = 0;
+static Boolean gSilentReported    = false;
+
+static void WatchForSilentPlayback(void)
+{
+    long now = TickCount();
+    long ro;
+
+    if (!gPlaying || gPaused) {          /* not playing, or legitimately stopped */
+        gLastReadOff = -1;
+        gSilentReported = false;
+        return;
+    }
+
+    ro = gReadOff;
+    if (ro != gLastReadOff) {            /* progress: reset the clock */
+        if (gSilentReported)
+            CDLogf("  pump: playback RECOVERED after %ld ticks of silence "
+                   "(doubleback calls now %ld)", now - gLastProgressTicks, gDbCalls);
+        gLastReadOff       = ro;
+        gLastProgressTicks = now;
+        gSilentReported    = false;
+        return;
+    }
+
+    if (gLastProgressTicks == 0) { gLastProgressTicks = now; return; }
+
+    if (!gSilentReported && (now - gLastProgressTicks) >= kSilentPlayTicks) {
+        gSilentReported = true;
+        if (gPub != NULL) {
+            gPub->silentPlays++;
+            if ((now - gLastProgressTicks) > gPub->silentPlayTicks)
+                gPub->silentPlayTicks = now - gLastProgressTicks;
+        }
+        CDLogf("  !! ★ PLAYING BUT SILENT: %ld ticks with NOTHING consumed. "
+               "doubleback calls=%ld delivered=%ld underruns=%ld",
+               now - gLastProgressTicks, gDbCalls, gReadOff, gUnderruns);
+        CDLogf("     If doubleback calls are not rising, the Sound Manager is not "
+               "running our channel and SndPlayDoubleBuffer's noErr meant nothing. "
+               "If they ARE rising, the ring is starving and the reads are the fault.");
+    }
 }
 
 /* ★★ SITE 7: the log write, which goes to the STARTUP DISC rather than the CD.
@@ -843,6 +912,7 @@ void CDPumpIdle(void)
 
     PublishCursor();
     PollLogWriteStalls();
+    WatchForSilentPlayback();
 
     if (!gPlaying || gPaused) return;
 

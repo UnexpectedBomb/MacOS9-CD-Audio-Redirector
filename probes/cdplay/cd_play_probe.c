@@ -1154,6 +1154,8 @@ int main(void)
                 CDLogf("  unknown position types: %ld   plays coalesced: %ld",
                        pub->posTypeUnknown, pub->playsCoalesced);
                 CDLogf("  driver transports stopped: %ld", pub->stopsSuppressed);
+                CDLogf("  doubleback calls: %ld   silent plays: %ld (worst %ld ticks)",
+                       pub->dbCalls, pub->silentPlays, pub->silentPlayTicks);
                 if (pub->stallCount > 0)
                     CDLogf("  ★ WORST STALL: site %ld for %ld ticks, %ld over "
                            "threshold (1 GetBlockSize 2 SetBlock2352 3 PBRead "

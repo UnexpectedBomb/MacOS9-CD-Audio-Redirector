@@ -360,6 +360,11 @@ afterDrain:
         CDLogf("  driver transports stopped: %ld (should equal the plays we took "
                "over; more than that means a caller's Stop was swallowed)",
                pub->stopsSuppressed);
+        CDLogf("  doubleback calls: %ld   silent plays: %ld (worst %ld ticks)",
+               pub->dbCalls, pub->silentPlays, pub->silentPlayTicks);
+        if (pub->silentPlays > 0)
+            CDLogf("  !! ★ THE PUMP REPORTED PLAYING WHILE MAKING NO SOUND. That is "
+                   "silence with no error, which the ship gate forbids outright.");
         if (pub->stallCount > 0)
             CDLogf("  ★ WORST STALL: site %ld for %ld ticks (%ld.%ld s), %ld call(s) "
                    "over threshold. Sites: 1 GetBlockSize, 2 SetBlock2352, 3 PBRead, "

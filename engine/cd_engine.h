@@ -51,8 +51,10 @@
  * alongside the corrected position decoding — a version-5 reader would miss exactly the
  * two counters that say whether that correction is holding. 7 = suppressStops and
  * stopsSuppressed appended, for stopping the driver's own transport. 8 = the stall
- * recorder (stallSite, stallTicks, stallCount). */
-#define kEngineVersion  8
+ * recorder (stallSite, stallTicks, stallCount). 9 = the silent-playback watchdog
+ * (dbCalls, silentPlays, silentPlayTicks) - a version-8 reader would miss exactly the
+ * fields that distinguish "playing" from "actually making sound". */
+#define kEngineVersion  9
 
 /* Which synchronous call blocked. Deliberately every candidate rather than the one I
  * currently suspect, because the last three suspicions were wrong. */
@@ -75,6 +77,11 @@
 /* Half a second. Long enough that ordinary calls never register, short enough that
  * anything a listener could notice does. */
 #define kStallThresholdTicks    30
+
+/* Two seconds of "playing" with nothing consumed. Long enough that the gap between
+ * gPlaying going true and the first doubleback cannot trip it, short enough that a
+ * listener would not yet have decided the music is broken. */
+#define kSilentPlayTicks        120
 
 /* ★ WHICH refusals we NOTE — and why we no longer try to overrule them.
  *
@@ -515,6 +522,30 @@ typedef struct {
     volatile long   stallSite;
     volatile long   stallTicks;
     volatile long   stallCount;
+
+    /* ★★ THE SILENT-PLAYBACK WATCHDOG, engine version 9 (2026-08-18).
+     *
+     * On 2026-08-17 the pump accepted a play at disc insertion, pre-rolled 352800
+     * bytes, got noErr from SndPlayDoubleBuffer - and then delivered ZERO bytes for
+     * 107 seconds while the listener heard nothing. Every counter read healthy. That
+     * is the exact failure the ship gate exists to forbid: silence with no error.
+     *
+     * It was only found because the machine was watched with NO probe running. Every
+     * probe run masked it, because the probe issues its own play a moment later.
+     *
+     * `dbCalls` is the discriminator, and it is the whole point. During that 107
+     * seconds both `pumpUnderruns` and the delivered count stayed at zero - and those
+     * two cannot BOTH stay still if the doubleback is running, because it either
+     * copies bytes out (delivered rises) or finds none (underruns rise). So the Sound
+     * Manager was never calling us, and SndPlayDoubleBuffer's noErr meant nothing.
+     * This counts the calls so that stops being an inference.
+     *
+     * `silentPlays` counts episodes of "playing, not paused, nothing consumed for
+     * kSilentPlayTicks"; `silentPlayTicks` is the longest. Both must be zero in a
+     * healthy run. */
+    volatile long   dbCalls;         /* doubleback invocations, from interrupt level */
+    volatile long   silentPlays;
+    volatile long   silentPlayTicks;
 
     /* ---- the mailbox in reverse: the playback cursor ---------------------- *
      * Phase 0 proved this driver answers AudioStatus and ReadQ with a position that
