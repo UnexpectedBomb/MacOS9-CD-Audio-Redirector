@@ -71,6 +71,25 @@
 #define CD_FACELESS 0
 #endif
 
+/* ★★★ CD_TRACE_ONLY = 1: WATCH, NEVER ACT.
+ *
+ * Every log this project has is from the mini, the machine where the music does NOT
+ * work. What Warcraft does when it SUCCEEDS has only ever been inferred, and inference
+ * has been wrong six times running - block-size churn, the driver's transport, the
+ * Finder, a failing disc, a phantom playing state, and the CD sound input device.
+ *
+ * So this build measures the working machine. It patches the Control entry and records
+ * every call in the trace ring and the log, and then does nothing whatsoever: no pump,
+ * no playback, no block-size change, no AudioStop, and no synthesis - synthesis is
+ * already gated on the pump playing, so never starting it switches that off for free.
+ *
+ * It exists to be safe to install on the MDD, where the game's music currently works
+ * and must keep working while we watch. A trace that breaks the thing it is measuring
+ * tells us nothing. */
+#ifndef CD_TRACE_ONLY
+#define CD_TRACE_ONLY 0
+#endif
+
 #include "cd_probe_common.h"
 #include "cd_engine.h"
 #include "cd_cscodes.h"
@@ -243,6 +262,9 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 
             CDLogf("--- request %ld: csCode %d ---", seq, cs);
             CDLogHexAt("  param", param, 16, 0);
+#if CD_TRACE_ONLY
+            /* Recorded and deliberately not acted on. See CD_TRACE_ONLY above. */
+#else
             switch (cs) {
                 case kcsAudioPlay:
                     CDProgressSay("AudioPlay -> starting playback");
@@ -268,8 +290,9 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
                 default:
                     break;
             }
+#endif
 
-#if CD_RING_MODE
+#if CD_RING_MODE && !CD_TRACE_ONLY
             /* Keep the ring fed between requests too. A burst of queued requests can
              * take a while to work through — CDPumpPlay alone pre-rolls for a second —
              * and the audio must not starve while we catch up.
@@ -284,7 +307,9 @@ static void PumpLoop(CDEnginePublic *pub, short refNum)
 #if CD_RING_SEPARATE
 afterDrain:
 #endif
+#if !CD_TRACE_ONLY
         CDPumpIdle();
+#endif
 
         /* Log what the ORIGINAL driver answers for AudioStatus and ReadQ, once each.
          * The MSF bytes we rewrite with confidence; byte 0 of AudioStatus is still a
@@ -814,9 +839,18 @@ int main(void)
 
         memset(&cd, 0, sizeof(cd));
         CDFindDriver(&cd, false);          /* for the drive number */
+#if CD_TRACE_ONLY
+        /* ★ No CDPumpInit in a trace-only build: no ring, no sound channel, no double
+         * buffers, and above all no possibility of playing anything. The loop below still
+         * runs, so requests are logged and the counters are dumped. */
+        CDLogf("  TRACE ONLY: the pump is deliberately NOT started. Every call is");
+        CDLogf("  recorded and none is acted on. Safe on a machine whose music works.");
+        perr = noErr;
+#else
         CDLogStep("CDPumpInit(refNum=%d drive=%d)", gInfo.cdRefNum, cd.driveNum);
         perr = CDPumpInit(gInfo.cdRefNum, cd.driveNum);
         CDLogf("  CDPumpInit err=%d", perr);
+#endif
         if (perr == noErr) {
             PumpLoop((CDEnginePublic *)gInfo.pubBlock, gInfo.cdRefNum);
         } else {

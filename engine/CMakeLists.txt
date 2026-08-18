@@ -132,6 +132,50 @@ add_custom_command(TARGET CDAudioRedirector_v19_disk POST_BUILD
             ${CMAKE_CURRENT_BINARY_DIR} CDAudioRedirector_v19
     COMMENT "Staging CDAudioRedirector_v19" VERBATIM)
 
+
+# --- CDTraceOnly: WATCH THE MACHINE WHERE THE MUSIC WORKS ---------------------
+#
+# Every log in this project comes from the mini, where Warcraft's music does NOT play.
+# What the game does when it SUCCEEDS has only ever been inferred, and inference has been
+# wrong six times. This build patches the Control entry, records every call, and acts on
+# nothing at all - no pump, no playback, no block-size change, no synthesis. It is meant
+# to be installed on the MDD, where the music works and must keep working while we watch.
+add_application(CDTraceOnly_v1
+    cd_engine_install.c
+    cd_pump_audio.c
+    ../probes/common/cd_probe_common.c
+    cd_engine_faceless.r
+    ${CMAKE_CURRENT_BINARY_DIR}/engine_pef.r
+    TYPE     "APPL"
+    CREATOR  "CDto")
+target_compile_definitions(CDTraceOnly_v1 PRIVATE CD_FACELESS=1 CD_TRACE_ONLY=1)
+target_include_directories(CDTraceOnly_v1 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../probes/common)
+target_link_libraries(CDTraceOnly_v1 DriverLoaderLib InterfaceLib)
+if(TARGET retrocrt)
+    add_dependencies(CDTraceOnly_v1 retrocrt)
+endif()
+add_custom_command(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/CDTraceOnly_v1.img
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-size-flags.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/CDTraceOnly_v1.bin 14C0
+    COMMAND /usr/bin/env python3 ${WRAP_APM}
+            ${CMAKE_CURRENT_BINARY_DIR}/CDTraceOnly_v1.dsk
+            ${CMAKE_CURRENT_BINARY_DIR}/CDTraceOnly_v1.img
+            CDTraceOnly_v1
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDTraceOnly_v1.dsk ${WRAP_APM}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-size-flags.sh
+    COMMENT "Checking SIZE flags, then wrapping CDTraceOnly_v1" VERBATIM)
+add_custom_target(CDTraceOnly_v1_disk ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/CDTraceOnly_v1.img)
+add_dependencies(CDTraceOnly_v1_disk CDTraceOnly_v1_APPL)
+add_custom_command(TARGET CDTraceOnly_v1_disk POST_BUILD
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/stage-artifacts.sh
+            ${CMAKE_CURRENT_BINARY_DIR} CDTraceOnly_v1
+    COMMENT "Staging CDTraceOnly_v1" VERBATIM)
+
 # --- bisectB: the good behaviour, on a SMALL allocation ----------------------
 #
 # bisectA answered the previous question: v1's behaviour on v4's memory still froze, so
@@ -284,7 +328,7 @@ add_dependencies(CDAudioRedirector_bisectC_disk CDAudioRedirector_bisectC_APPL)
 # announced itself as v10 because only the target had been bumped, and the log is
 # how you know what ran. A source that lacks CD_ARTIFACT_NAME fails to compile, so
 # a target missing from this list is a loud error rather than an unlabelled binary.
-foreach(_cd_target CDPump_v23 CDAudioRedirector_v19
+foreach(_cd_target CDPump_v23 CDAudioRedirector_v19 CDTraceOnly_v1
                    CDAudioRedirector_bisectB CDAudioRedirector_bisectC)
     target_compile_definitions(${_cd_target} PRIVATE
         CD_ARTIFACT_NAME=\"$<TARGET_PROPERTY:NAME>\")
